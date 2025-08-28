@@ -1,0 +1,1 @@
+"""BigQuery connector implementation."""
