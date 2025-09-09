@@ -17,8 +17,10 @@ def main(**kw):
 
     conn1 = create_connection(db1_type, **kw['database1']['config'])
     conn2 = create_connection(db2_type, **kw['database2']['config'])
-    diff_check = Diffcheck(conn1, conn2, kw['database1'], kw['database2'], 'JOIN_DIFF')
-    diff_check.data_diff()
+    diff_check = Diffcheck(conn1, conn2, kw['database1'], kw['database2'])
+
+    if(db1_type == db2_type):
+        diff_check.data_diff('JOIN_DIFF')
    
 
 if __name__ == "__main__":

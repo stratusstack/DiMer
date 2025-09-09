@@ -1,4 +1,6 @@
 from typing import Hashable, MutableMapping, Type, Optional, Union, Dict, Any
+import structlog
+logger = structlog.get_logger(__name__)
 
 class Diffcheck(): 
     _conn1 : Any
@@ -6,13 +8,12 @@ class Diffcheck():
     _db1: Any
     _db2: Any
 
-    def __init__(self, connection1, connection2, db1, db2, algorithm):
+    def __init__(self, connection1, connection2, db1, db2):
         super().__init__()
         self._conn1 = connection1
         self._conn2 = connection2
         self._db1 = db1
         self._db2 = db2
-        self.algorithm = algorithm
 
     def get_column_list(self, conn1, table_name):
 
@@ -25,7 +26,7 @@ class Diffcheck():
     def check_cols(self, column_list_a, column_list_b):
         return column_list_a == column_list_b
 
-    def data_diff(self):
+    def data_diff(self, algorithm):
 
         keys_a = self._db1['keys']
         keys_b = self._db2['keys']
@@ -42,22 +43,22 @@ class Diffcheck():
         if not(self.check_cols(column_list_a, column_list_b)):
             raise ValueError("Column list mismatches")
 
-        if(self.algorithm == "JOIN_DIFF"):
+        if(algorithm == "JOIN_DIFF"):
             join_q = self.constuct_join(keys_a, keys_b, table_a, table_b, column_list_a, column_list_b, "LEFT")
             cur = self._conn1.connection.cursor()
             cur.execute(join_q)
             row_count = cur.rowcount
             if(row_count==0):
-                print(f"Segment equal - ROW_COUNT: {row_count}")
+                logger.info(f"Segment equal - ROW_COUNT: {row_count}")
             else:
-                print(f"Segment not equal - ROW_COUNT:{row_count}")
+                logger.info(f"Segment not equal - ROW_COUNT:{row_count}")
             
 
     def check_schema(table_a, table_b):
-        print("Inside check schema")
+        logger.info("Inside check schema")
     
     def compare():
-        print("Inside Compare")
+        logger.info("Inside Compare")
 
 
     def constuct_join(self, keys_a, keys_b, table_a, table_b, column_list_a, column_list_b, join_type="INNER"):
@@ -89,6 +90,6 @@ class Diffcheck():
         where {hash_query_a}!={hash_query_b}
         """
 
-        print(sql.strip())
+        logger.info(f"Query constructed: {sql.strip()}")
         return sql.strip()
 
