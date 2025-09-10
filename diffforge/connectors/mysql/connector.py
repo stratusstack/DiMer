@@ -230,6 +230,8 @@ class MySQLConnector(DataSourceConnector):
         # Test the connection
         with engine.connect() as conn:
             result = conn.execute("SELECT VERSION()").fetchone()
+            if result is None or len(result) == 0:
+                raise ConnectionError("Unable to retrieve MySQL version")
             version = result[0]
 
         logger.info("SQLAlchemy connection established", mysql_version=version)
@@ -304,11 +306,11 @@ class MySQLConnector(DataSourceConnector):
             COLUMN_KEY,
             EXTRA
         FROM information_schema.COLUMNS 
-        WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
+        WHERE TABLE_SCHEMA = %(schema)s AND TABLE_NAME = %(table_name)s
         ORDER BY ORDINAL_POSITION
         """
 
-        columns_df = self._execute_query_internal(columns_query, [schema, table_name])
+        columns_df = self._execute_query_internal(columns_query, {'schema': schema, 'table_name': table_name})
 
         # Build column metadata
         columns = []
@@ -340,10 +342,10 @@ class MySQLConnector(DataSourceConnector):
             CREATE_TIME,
             TABLE_COMMENT
         FROM information_schema.TABLES 
-        WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
+        WHERE TABLE_SCHEMA = %(schema)s AND TABLE_NAME = %(table_name)s
         """
 
-        stats_df = self._execute_query_internal(stats_query, [schema, table_name])
+        stats_df = self._execute_query_internal(stats_query, {'schema': schema, 'table_name': table_name})
 
         # Extract statistics
         row_count = None
@@ -376,11 +378,11 @@ class MySQLConnector(DataSourceConnector):
             SEQ_IN_INDEX,
             INDEX_TYPE
         FROM information_schema.STATISTICS 
-        WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
+        WHERE TABLE_SCHEMA = %(schema)s AND TABLE_NAME = %(table_name)s
         ORDER BY INDEX_NAME, SEQ_IN_INDEX
         """
 
-        indexes_df = self._execute_query_internal(indexes_query, [schema, table_name])
+        indexes_df = self._execute_query_internal(indexes_query, {'schema': schema, 'table_name': table_name})
 
         # Group indexes
         indexes = []
@@ -403,6 +405,8 @@ class MySQLConnector(DataSourceConnector):
                 indexes.append(current_index)
 
         return TableMetadata(
+            name=table_name,
+            schema=schema,
             columns=columns,
             row_count=row_count,
             size_bytes=size_bytes,
@@ -456,17 +460,17 @@ class MySQLConnector(DataSourceConnector):
         if schema_name:
             query = """
             SELECT TABLE_NAME FROM information_schema.TABLES 
-            WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE'
+            WHERE TABLE_SCHEMA = %(schema_name)s AND TABLE_TYPE = 'BASE TABLE'
             ORDER BY TABLE_NAME
             """
-            df = self._execute_query_internal(query, [schema_name])
+            df = self._execute_query_internal(query, {'schema_name': schema_name})
         else:
             query = """
             SELECT TABLE_NAME FROM information_schema.TABLES 
-            WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE'
+            WHERE TABLE_SCHEMA = %(database)s AND TABLE_TYPE = 'BASE TABLE'
             ORDER BY TABLE_NAME
             """
-            df = self._execute_query_internal(query, [self.connection_config.database])
+            df = self._execute_query_internal(query, {'database': self.connection_config.database})
 
         return df["TABLE_NAME"].tolist()
 

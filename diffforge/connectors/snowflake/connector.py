@@ -39,6 +39,7 @@ class SnowflakeConnector(DataSourceConnector):
         """
         return [
             ConnectionMethod.ARROW,  # Fastest for large datasets
+            ConnectionMethod.SNOWPARK,  # DataFrame operations
             ConnectionMethod.NATIVE,  # Standard snowflake-connector
             ConnectionMethod.SQLALCHEMY,  # ORM approach
         ]
@@ -354,11 +355,17 @@ class SnowflakeConnector(DataSourceConnector):
 
         Returns:
             Account identifier
+            
+        Raises:
+            ValueError: If host is invalid or account cannot be extracted
         """
         if not self.connection_config.host:
             raise ValueError("Host is required for Snowflake connection")
 
-        host = self.connection_config.host
+        host = self.connection_config.host.strip()
+        
+        if not host:
+            raise ValueError("Host cannot be empty for Snowflake connection")
 
         # Remove protocol if present
         if "://" in host:
@@ -370,7 +377,14 @@ class SnowflakeConnector(DataSourceConnector):
 
         # Extract account from snowflakecomputing.com domain
         if ".snowflakecomputing.com" in host:
-            return host.replace(".snowflakecomputing.com", "")
+            account = host.replace(".snowflakecomputing.com", "")
+            if not account:
+                raise ValueError("Invalid Snowflake account: host contains only domain")
+            return account
+
+        # Validate if host looks like a valid account identifier
+        if not host or "." in host or " " in host:
+            raise ValueError(f"Invalid Snowflake account identifier: {host}")
 
         # Assume host is the account identifier
         return host
@@ -496,6 +510,8 @@ class SnowflakeConnector(DataSourceConnector):
             last_modified = stats_df.iloc[0]["LAST_ALTERED"]
 
         return TableMetadata(
+            name=table_name,
+            schema=schema,
             columns=columns,
             row_count=row_count,
             size_bytes=size_bytes,

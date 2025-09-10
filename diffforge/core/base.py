@@ -1,6 +1,5 @@
 """Abstract base class for all data source connectors."""
 
-import logging
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
@@ -63,18 +62,38 @@ class DataSourceConnector(ABC):
         Validate required connection parameters.
 
         Raises:
-            ValueError: If required parameters are missing
+            ValueError: If required parameters are missing or invalid
         """
         required_params = self.get_required_params()
-        config_dict = self.connection_config.__dict__
-        missing = [
-            param
-            for param in required_params
-            if getattr(self.connection_config, param, None) is None
-        ]
+        missing = []
+        invalid = []
 
+        for param in required_params:
+            value = getattr(self.connection_config, param, None)
+            if value is None:
+                missing.append(param)
+            elif isinstance(value, str) and value.strip() == "":
+                missing.append(f"{param} (empty string)")
+
+        # Basic format validation for common parameters
+        if hasattr(self.connection_config, 'port') and self.connection_config.port is not None:
+            if not isinstance(self.connection_config.port, int) or not (1 <= self.connection_config.port <= 65535):
+                invalid.append("port (must be integer between 1-65535)")
+
+        if hasattr(self.connection_config, 'host') and self.connection_config.host:
+            host = self.connection_config.host.strip()
+            if ' ' in host:
+                invalid.append("host (contains spaces)")
+
+        # Collect all validation errors
+        errors = []
         if missing:
-            raise ValueError(f"Missing required parameters: {missing}")
+            errors.append(f"Missing required parameters: {missing}")
+        if invalid:
+            errors.append(f"Invalid parameters: {invalid}")
+
+        if errors:
+            raise ValueError("; ".join(errors))
 
     @abstractmethod
     def get_required_params(self) -> List[str]:
