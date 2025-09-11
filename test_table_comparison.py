@@ -10,6 +10,7 @@ Snowflake configurations are provided via user input.
 """
 
 import sys
+import json
 import getpass
 from typing import Dict, Any
 
@@ -26,12 +27,16 @@ def get_user_input() -> Dict[str, Any]:
     print("Select comparison type:")
     print("1. Same database (different tables)")
     print("2. Different databases (cross-database)")
+    print("3. JSON configuration")
     
     while True:
-        choice = input("Enter your choice (1 or 2): ").strip()
-        if choice in ['1', '2']:
+        choice = input("Enter your choice (1, 2, or 3): ").strip()
+        if choice in ['1', '2', '3']:
             break
-        print("Please enter 1 or 2")
+        print("Please enter 1, 2, or 3")
+    
+    if choice == '3':
+        return get_json_input()
     
     same_database = choice == '1'
     
@@ -94,6 +99,130 @@ def get_snowflake_config(label: str) -> ConnectionConfig:
     )
 
 
+def get_json_input() -> Dict[str, Any]:
+    """Get configuration from JSON input."""
+    print("\n=== JSON Configuration ===")
+    print("Paste your JSON configuration (press Ctrl+D or Ctrl+Z when done):")
+    
+    try:
+        # Read multi-line JSON input
+        json_lines = []
+        while True:
+            try:
+                line = input()
+                json_lines.append(line)
+            except EOFError:
+                break
+        
+        json_string = '\n'.join(json_lines)
+        config_data = json.loads(json_string)
+        
+        # Validate required keys
+        if 'database1' not in config_data or 'database2' not in config_data:
+            raise ValueError("JSON must contain 'database1' and 'database2' keys")
+        
+        # Extract database configurations
+        db1_data = config_data['database1']
+        db2_data = config_data['database2']
+        
+        # Create ConnectionConfig objects
+        config1 = ConnectionConfig(
+            host=db1_data['config']['host'],
+            username=db1_data['config']['username'],
+            password=db1_data['config']['password'],
+            database=db1_data['config']['database'],
+            schema_name=db1_data['config']['schema_name'],
+            extra_params=db1_data['config'].get('extra_params', {})
+        )
+        
+        config2 = ConnectionConfig(
+            host=db2_data['config']['host'],
+            username=db2_data['config']['username'],
+            password=db2_data['config']['password'],
+            database=db2_data['config']['database'],
+            schema_name=db2_data['config']['schema_name'],
+            extra_params=db2_data['config'].get('extra_params', {})
+        )
+        
+        # Determine if same database based on type and host
+        same_database = (db1_data['type'] == db2_data['type'] and 
+                        db1_data['config']['host'] == db2_data['config']['host'] and
+                        db1_data['config']['database'] == db2_data['config']['database'])
+        
+        # Extract table names and keys
+        table1 = db1_data.get('fq_table_name', db1_data.get('table_name', ''))
+        table2 = db2_data.get('fq_table_name', db2_data.get('table_name', ''))
+        keys1 = db1_data.get('keys', [])
+        keys2 = db2_data.get('keys', [])
+        
+        return {
+            'same_database': same_database,
+            'config1': config1,
+            'config2': config2,
+            'table1': table1,
+            'table2': table2,
+            'keys1': keys1,
+            'keys2': keys2,
+            'json_mode': True
+        }
+        
+    except json.JSONDecodeError as e:
+        print(f"✗ Invalid JSON format: {e}")
+        raise
+    except KeyError as e:
+        print(f"✗ Missing required key in JSON: {e}")
+        raise
+    except Exception as e:
+        print(f"✗ Error processing JSON configuration: {e}")
+        raise
+
+
+def build_fully_qualified_table_names(user_input: Dict[str, Any], same_database: bool = True) -> tuple[str, str]:
+    """Build fully qualified table names handling JSON vs manual input."""
+    json_mode = user_input.get('json_mode', False)
+    
+    if json_mode and ('.' in user_input['table1'] or '"' in user_input['table1']):
+        # JSON mode with already qualified table names
+        return user_input['table1'], user_input['table2']
+    else:
+        # Manual input or simple table names - construct FQ names
+        if same_database:
+            schema = user_input['config1'].schema_name
+            fq_table1 = f'"{schema}"."{user_input["table1"]}"'
+            fq_table2 = f'"{schema}"."{user_input["table2"]}"'
+        else:
+            schema1 = user_input['config1'].schema_name
+            schema2 = user_input['config2'].schema_name
+            fq_table1 = f'"{schema1}"."{user_input["table1"]}"'
+            fq_table2 = f'"{schema2}"."{user_input["table2"]}"'
+        return fq_table1, fq_table2
+
+
+def create_db_configs(user_input: Dict[str, Any], fq_table1: str, fq_table2: str) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Create database configuration dictionaries for Diffcheck."""
+    db1_config = {
+        'keys': user_input['keys1'],
+        'fq_table_name': fq_table1
+    }
+    
+    db2_config = {
+        'keys': user_input['keys2'],
+        'fq_table_name': fq_table2
+    }
+    
+    return db1_config, db2_config
+
+
+def print_connection_metrics(connector, label: str = "Connection"):
+    """Print connection metrics for a connector."""
+    metrics = connector.get_connection_metrics()
+    print(f"{label} attempts: {len(metrics)}")
+    for i, metric in enumerate(metrics):
+        status = "✓" if metric['success'] else "✗"
+        print(f"  Attempt {i+1}: {status} {metric['method']} ({metric['duration']:.2f}s)")
+
+
+
 def create_connector(config: ConnectionConfig, label: str):
     """Create and test a Snowflake connector."""
     try:
@@ -127,20 +256,10 @@ def test_same_database_comparison(user_input: Dict[str, Any]):
     
     try:
         # Build fully qualified table names
-        schema = user_input['config1'].schema_name
-        fq_table1 = f'"{schema}"."{user_input["table1"]}"'
-        fq_table2 = f'"{schema}"."{user_input["table2"]}"'
+        fq_table1, fq_table2 = build_fully_qualified_table_names(user_input, same_database=True)
         
         # Prepare database configurations for Diffcheck
-        db1_config = {
-            'keys': user_input['keys1'],
-            'fq_table_name': fq_table1
-        }
-        
-        db2_config = {
-            'keys': user_input['keys2'],
-            'fq_table_name': fq_table2
-        }
+        db1_config, db2_config = create_db_configs(user_input, fq_table1, fq_table2)
         
         # Create Diffcheck instance (same connector for both tables)
         diff_checker = Diffcheck(connector, connector, db1_config, db2_config)
@@ -149,6 +268,7 @@ def test_same_database_comparison(user_input: Dict[str, Any]):
         print(f"\n--- Schema Comparison ---")
         schema_compatible = diff_checker.check_schema(fq_table1, fq_table2)
         print(f"Schema compatibility: {'✓' if schema_compatible else '✗'}")
+
         
         # Perform data comparison
         print(f"\n--- Data Comparison ---")
@@ -156,11 +276,7 @@ def test_same_database_comparison(user_input: Dict[str, Any]):
         
         # Get connection metrics
         print(f"\n--- Performance Metrics ---")
-        metrics = connector.get_connection_metrics()
-        print(f"Connection attempts: {len(metrics)}")
-        for i, metric in enumerate(metrics):
-            status = "✓" if metric['success'] else "✗"
-            print(f"  Attempt {i+1}: {status} {metric['method']} ({metric['duration']:.2f}s)")
+        print_connection_metrics(connector, "Connection")
         
     except Exception as e:
         print(f"✗ Error during same database comparison: {e}")
@@ -186,21 +302,10 @@ def test_cross_database_comparison(user_input: Dict[str, Any]):
     
     try:
         # Build fully qualified table names
-        schema1 = user_input['config1'].schema_name
-        schema2 = user_input['config2'].schema_name
-        fq_table1 = f'"{schema1}"."{user_input["table1"]}"'
-        fq_table2 = f'"{schema2}"."{user_input["table2"]}"'
+        fq_table1, fq_table2 = build_fully_qualified_table_names(user_input, same_database=False)
         
         # Prepare database configurations for Diffcheck
-        db1_config = {
-            'keys': user_input['keys1'],
-            'fq_table_name': fq_table1
-        }
-        
-        db2_config = {
-            'keys': user_input['keys2'],
-            'fq_table_name': fq_table2
-        }
+        db1_config, db2_config = create_db_configs(user_input, fq_table1, fq_table2)
         
         # Create Diffcheck instance
         diff_checker = Diffcheck(connector1, connector2, db1_config, db2_config)
@@ -216,18 +321,8 @@ def test_cross_database_comparison(user_input: Dict[str, Any]):
         
         # Get connection metrics for both connectors
         print(f"\n--- Performance Metrics ---")
-        metrics1 = connector1.get_connection_metrics()
-        metrics2 = connector2.get_connection_metrics()
-        
-        print(f"Database 1 connection attempts: {len(metrics1)}")
-        for i, metric in enumerate(metrics1):
-            status = "✓" if metric['success'] else "✗"
-            print(f"  Attempt {i+1}: {status} {metric['method']} ({metric['duration']:.2f}s)")
-        
-        print(f"Database 2 connection attempts: {len(metrics2)}")
-        for i, metric in enumerate(metrics2):
-            status = "✓" if metric['success'] else "✗"
-            print(f"  Attempt {i+1}: {status} {metric['method']} ({metric['duration']:.2f}s)")
+        print_connection_metrics(connector1, "Database 1 connection")
+        print_connection_metrics(connector2, "Database 2 connection")
         
     except Exception as e:
         print(f"✗ Error during cross-database comparison: {e}")
@@ -235,15 +330,6 @@ def test_cross_database_comparison(user_input: Dict[str, Any]):
         connector1.close()
         connector2.close()
 
-
-def verify_table_exists(connector, table_name: str, schema_name: str) -> bool:
-    """Verify that a table exists in the database."""
-    try:
-        tables = connector.list_tables(schema_name)
-        return table_name in tables
-    except Exception as e:
-        print(f"Warning: Could not verify table existence: {e}")
-        return True  # Assume it exists and let the comparison handle the error
 
 
 def main():
@@ -254,6 +340,9 @@ def main():
         
         # Show configuration summary
         print(f"\n=== Configuration Summary ===")
+        json_mode = user_input.get('json_mode', False)
+        print(f"Input mode: {'JSON Configuration' if json_mode else 'Manual Input'}")
+        
         if user_input['same_database']:
             print(f"Type: Same database comparison")
             print(f"Database: {user_input['config1'].database}")
