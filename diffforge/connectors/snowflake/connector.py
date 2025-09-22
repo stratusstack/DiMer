@@ -25,6 +25,10 @@ class SnowflakeConnector(DataSourceConnector):
     DEFAULT_WAREHOUSE = "COMPUTE_WH"
     DEFAULT_ROLE = "PUBLIC"
     MAX_SAMPLE_ROWS = 100000
+    DIALECTS = {
+        "hash": "HASH({COL})",
+        "concatination" : "||"
+    }
 
     def get_required_params(self) -> List[str]:
         """Return list of required connection parameters for Snowflake."""

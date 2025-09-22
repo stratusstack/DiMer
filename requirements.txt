@@ -1,0 +1,4 @@
+JayDeBeApi
+pandas
+snowflake-connector-python[pandas]
+structlog
