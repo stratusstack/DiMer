@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Advanced usage examples for DiffForge connectors.
+Advanced usage examples for DiMer connectors.
 
 This script demonstrates advanced features like using all connector types,
 performance monitoring, connection management, and error handling.
@@ -12,10 +12,10 @@ import tempfile
 from pathlib import Path
 from typing import Dict, Any
 
-from diffforge.core.models import ConnectionConfig
-from diffforge.core.factory import ConnectorFactory
-from diffforge.core.manager import ConnectionManager
-from diffforge.metrics.collector import get_metrics_collector
+from dimer.core.models import ConnectionConfig
+from dimer.core.factory import ConnectorFactory
+from dimer.core.manager import ConnectionManager
+from dimer.metrics.collector import get_metrics_collector
 
 
 def create_mysql_config() -> ConnectionConfig:
@@ -59,7 +59,7 @@ def create_databricks_config() -> ConnectionConfig:
 
 def create_sample_files():
     """Create sample Parquet and CSV files for testing."""
-    temp_dir = tempfile.mkdtemp(prefix='diffforge_')
+    temp_dir = tempfile.mkdtemp(prefix='dimer_')
     
     # Sample data
     data = {
@@ -421,7 +421,7 @@ def example_type_mapping_advanced():
     """Example: Advanced type mapping and data conversion."""
     print("\n=== Example: Advanced Type Mapping ===")
     
-    from diffforge.core.types import DataTypeMapper
+    from dimer.core.types import DataTypeMapper
     
     # Show comprehensive type mappings
     sources = DataTypeMapper.get_supported_sources()
@@ -468,7 +468,7 @@ def example_type_mapping_advanced():
 
 def main():
     """Run all advanced examples."""
-    print("DiffForge Advanced Usage Examples")
+    print("DiMer Advanced Usage Examples")
     print("=" * 50)
     
     import time

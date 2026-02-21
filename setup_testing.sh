@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# DiffForge Snowflake Connector Setup Script
+# DiMer Snowflake Connector Setup Script
 # This script installs all dependencies needed for testing
 
 set -e  # Exit on any error
 
-echo "🚀 Setting up DiffForge Snowflake Connector for testing..."
+echo "🚀 Setting up DiMer Snowflake Connector for testing..."
 
 # Colors for output
 RED='\033[0;31m'
@@ -49,7 +49,7 @@ else
 fi
 
 # Install core package with Snowflake and dev dependencies
-echo -e "\n📦 Installing DiffForge with dependencies..."
+echo -e "\n📦 Installing DiMer with dependencies..."
 
 # Install Snowflake connector first (avoid dependency conflicts)
 print_info "Installing Snowflake connector..."
@@ -63,13 +63,13 @@ else
 fi
 
 # Install the package in development mode with dev dependencies
-print_info "Installing DiffForge in development mode..."
+print_info "Installing DiMer in development mode..."
 pip install -e ".[dev]"
 
 if [ $? -eq 0 ]; then
-    print_success "DiffForge installed in development mode"
+    print_success "DiMer installed in development mode"
 else
-    print_error "Failed to install DiffForge"
+    print_error "Failed to install DiMer"
     exit 1
 fi
 
@@ -113,6 +113,6 @@ echo "   python test_snowflake.py --integration-only # Integration tests only"
 echo "   python test_snowflake.py --benchmark        # Include performance benchmark"
 echo ""
 echo "3. For quick manual testing:"
-echo "   python -c \"from diffforge.connectors.snowflake.connector import SnowflakeConnector; print('Import successful!')\""
+echo "   python -c \"from dimer.connectors.snowflake.connector import SnowflakeConnector; print('Import successful!')\""
 
 print_success "🎉 Setup complete! Ready for testing."

@@ -1,4 +1,4 @@
-"""Test configuration and fixtures for DiffForge tests."""
+"""Test configuration and fixtures for DiMer tests."""
 
 import os
 from typing import Any, Dict
@@ -6,10 +6,10 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from diffforge.core.factory import ConnectorFactory
-from diffforge.core.manager import ConnectionManager
-from diffforge.core.models import ConnectionConfig
-from diffforge.metrics.collector import MetricsCollector
+from dimer.core.factory import ConnectorFactory
+from dimer.core.manager import ConnectionManager
+from dimer.core.models import ConnectionConfig
+from dimer.metrics.collector import MetricsCollector
 
 
 @pytest.fixture
@@ -92,7 +92,7 @@ def reset_factory():
     yield
     # Re-register connectors after test
     try:
-        from diffforge.core.factory import _auto_register_connectors
+        from dimer.core.factory import _auto_register_connectors
 
         _auto_register_connectors()
     except ImportError:
@@ -135,7 +135,7 @@ def mock_postgresql_connector():
 @pytest.fixture
 def sample_table_metadata():
     """Sample table metadata for testing."""
-    from diffforge.core.models import ColumnMetadata, TableMetadata
+    from dimer.core.models import ColumnMetadata, TableMetadata
 
     columns = [
         ColumnMetadata(

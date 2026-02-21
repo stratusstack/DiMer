@@ -4,8 +4,8 @@ from typing import Any, Dict, Type
 
 import structlog
 
-from diffforge.core.base import DataSourceConnector
-from diffforge.core.models import ConnectionConfig
+from dimer.core.base import DataSourceConnector
+from dimer.core.models import ConnectionConfig
 
 logger = structlog.get_logger(__name__)
 
@@ -104,7 +104,7 @@ def _auto_register_connectors() -> None:
     """Automatically register available connectors."""
     try:
         # Import and register Snowflake connector
-        from diffforge.connectors.snowflake.connector import SnowflakeConnector
+        from dimer.connectors.snowflake.connector import SnowflakeConnector
 
         ConnectorFactory.register_connector("snowflake", SnowflakeConnector)
     except ImportError:
@@ -112,7 +112,7 @@ def _auto_register_connectors() -> None:
 
     try:
         # Import and register PostgreSQL connector
-        from diffforge.connectors.postgresql.connector import PostgreSQLConnector
+        from dimer.connectors.postgresql.connector import PostgreSQLConnector
 
         ConnectorFactory.register_connector("postgresql", PostgreSQLConnector)
         ConnectorFactory.register_connector("postgres", PostgreSQLConnector)
@@ -121,7 +121,7 @@ def _auto_register_connectors() -> None:
 
     try:
         # Import and register MySQL connector
-        from diffforge.connectors.mysql.connector import MySQLConnector
+        from dimer.connectors.mysql.connector import MySQLConnector
 
         ConnectorFactory.register_connector("mysql", MySQLConnector)
     except ImportError:
@@ -129,7 +129,7 @@ def _auto_register_connectors() -> None:
 
     try:
         # Import and register BigQuery connector
-        from diffforge.connectors.bigquery.connector import BigQueryConnector
+        from dimer.connectors.bigquery.connector import BigQueryConnector
 
         ConnectorFactory.register_connector("bigquery", BigQueryConnector)
         ConnectorFactory.register_connector("bq", BigQueryConnector)
@@ -138,7 +138,7 @@ def _auto_register_connectors() -> None:
 
     try:
         # Import and register Databricks connector
-        from diffforge.connectors.databricks.connector import DatabricksConnector
+        from dimer.connectors.databricks.connector import DatabricksConnector
 
         ConnectorFactory.register_connector("databricks", DatabricksConnector)
     except ImportError:
@@ -146,8 +146,8 @@ def _auto_register_connectors() -> None:
 
     try:
         # Import and register file-based connectors
-        from diffforge.connectors.files.csv_connector import CSVConnector
-        from diffforge.connectors.files.parquet_connector import ParquetConnector
+        from dimer.connectors.files.csv_connector import CSVConnector
+        from dimer.connectors.files.parquet_connector import ParquetConnector
 
         ConnectorFactory.register_connector("parquet", ParquetConnector)
         ConnectorFactory.register_connector("csv", CSVConnector)

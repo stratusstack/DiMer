@@ -5,14 +5,14 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import structlog
 
-from diffforge.core.base import DataSourceConnector
-from diffforge.core.models import (
+from dimer.core.base import DataSourceConnector
+from dimer.core.models import (
     ColumnMetadata,
     ConnectionConfig,
     ConnectionMethod,
     TableMetadata,
 )
-from diffforge.core.types import DataTypeMapper
+from dimer.core.types import DataTypeMapper
 
 logger = structlog.get_logger(__name__)
 
@@ -99,7 +99,7 @@ class MySQLConnector(DataSourceConnector):
         # Create connection pool for better performance
         if self.connection_config.pool_size > 1:
             pool_config = {
-                "pool_name": f"diffforge_pool_{id(self)}",
+                "pool_name": f"dimer_pool_{id(self)}",
                 "pool_size": self.connection_config.pool_size,
                 "pool_reset_session": True,
                 **connection_params,

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for comparing Snowflake tables using DiffForge enhanced compare.py.
+Test script for comparing Snowflake tables using DiMer enhanced compare.py.
 
 This script tests:
 1. Tables within the same Snowflake database 
@@ -14,9 +14,9 @@ import json
 import getpass
 from typing import Dict, Any
 
-from diffforge.core.models import ConnectionConfig
-from diffforge.core.factory import ConnectorFactory
-from diffforge.core.compare import Diffcheck
+from dimer.core.models import ConnectionConfig
+from dimer.core.factory import ConnectorFactory
+from dimer.core.compare import Diffcheck
 
 
 def get_user_input() -> Dict[str, Any]:

@@ -3,14 +3,14 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "diffforge"
+name = "dimer"
 version = "0.1.0"
 description = "Universal Data Source Connector Module with Fallback Strategies"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [
-    {name = "DiffForge Team"},
+    {name = "DiMer Team"},
 ]
 keywords = ["data", "connector", "database", "integration"]
 classifiers = [
@@ -60,7 +60,7 @@ databricks = [
     "databricks-connect>=13.0.0",
 ]
 all = [
-    "diffforge[snowflake,postgresql,mysql,bigquery,databricks]",
+    "dimer[snowflake,postgresql,mysql,bigquery,databricks]",
 ]
 dev = [
     "pytest>=7.0.0",
@@ -75,14 +75,14 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/diffforge/diffforge"
-Documentation = "https://diffforge.readthedocs.io"
-Repository = "https://github.com/diffforge/diffforge"
-"Bug Tracker" = "https://github.com/diffforge/diffforge/issues"
+Homepage = "https://github.com/dimer/dimer"
+Documentation = "https://dimer.readthedocs.io"
+Repository = "https://github.com/dimer/dimer"
+"Bug Tracker" = "https://github.com/dimer/dimer/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["diffforge*"]
+include = ["dimer*"]
 exclude = ["tests*"]
 
 [tool.black]
@@ -114,11 +114,11 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
-addopts = "-v --cov=diffforge --cov-report=term-missing --cov-report=html"
+addopts = "-v --cov=dimer --cov-report=term-missing --cov-report=html"
 asyncio_mode = "auto"
 
 [tool.coverage.run]
-source = ["diffforge"]
+source = ["dimer"]
 omit = ["tests/*", "examples/*"]
 
 [tool.coverage.report]

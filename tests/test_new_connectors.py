@@ -8,12 +8,12 @@ from unittest.mock import MagicMock, Mock, patch
 import pandas as pd
 import pytest
 
-from diffforge.connectors.bigquery.connector import BigQueryConnector
-from diffforge.connectors.databricks.connector import DatabricksConnector
-from diffforge.connectors.files.csv_connector import CSVConnector
-from diffforge.connectors.files.parquet_connector import ParquetConnector
-from diffforge.connectors.mysql.connector import MySQLConnector
-from diffforge.core.models import ConnectionConfig, ConnectionMethod
+from dimer.connectors.bigquery.connector import BigQueryConnector
+from dimer.connectors.databricks.connector import DatabricksConnector
+from dimer.connectors.files.csv_connector import CSVConnector
+from dimer.connectors.files.parquet_connector import ParquetConnector
+from dimer.connectors.mysql.connector import MySQLConnector
+from dimer.core.models import ConnectionConfig, ConnectionMethod
 
 
 class TestMySQLConnector:
@@ -510,7 +510,7 @@ class TestConnectorIntegration:
 
     def test_factory_registration(self):
         """Test that all new connectors are registered with factory."""
-        from diffforge.core.factory import ConnectorFactory
+        from dimer.core.factory import ConnectorFactory
 
         supported = ConnectorFactory.get_supported_sources()
 
@@ -523,7 +523,7 @@ class TestConnectorIntegration:
 
     def test_connector_creation(self):
         """Test creating connectors through factory."""
-        from diffforge.core.factory import ConnectorFactory
+        from dimer.core.factory import ConnectorFactory
 
         # Test MySQL
         mysql_config = ConnectionConfig(

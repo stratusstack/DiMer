@@ -8,7 +8,7 @@ import pandas as pd
 import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from diffforge.core.models import (
+from dimer.core.models import (
     ColumnMetadata,
     ConnectionConfig,
     ConnectionMethod,

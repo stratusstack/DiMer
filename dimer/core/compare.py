@@ -1,6 +1,6 @@
 from typing import Hashable, MutableMapping, Type, Optional, Union, Dict, Any, List
 import structlog
-from diffforge.core.models import TableMetadata, ColumnMetadata
+from dimer.core.models import TableMetadata, ColumnMetadata
 
 logger = structlog.get_logger(__name__)
 

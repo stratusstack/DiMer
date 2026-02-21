@@ -6,14 +6,14 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import structlog
 
-from diffforge.core.base import DataSourceConnector
-from diffforge.core.models import (
+from dimer.core.base import DataSourceConnector
+from dimer.core.models import (
     ColumnMetadata,
     ConnectionConfig,
     ConnectionMethod,
     TableMetadata,
 )
-from diffforge.core.types import DataTypeMapper
+from dimer.core.types import DataTypeMapper
 
 logger = structlog.get_logger(__name__)
 
@@ -78,7 +78,7 @@ class SnowflakeConnector(DataSourceConnector):
             "schema": self.connection_config.schema_name or "PUBLIC",
             "session_parameters": {
                 "PYTHON_CONNECTOR_QUERY_RESULT_FORMAT": "arrow",
-                "QUERY_TAG": "diffforge-arrow-connector",
+                "QUERY_TAG": "dimer-arrow-connector",
             },
         }
 
@@ -179,7 +179,7 @@ class SnowflakeConnector(DataSourceConnector):
             "role": self.connection_config.extra_params.get("role", self.DEFAULT_ROLE),
             "schema": self.connection_config.schema_name or "PUBLIC",
             "session_parameters": {
-                "QUERY_TAG": "diffforge-native-connector",
+                "QUERY_TAG": "dimer-native-connector",
             },
         }
 

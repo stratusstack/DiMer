@@ -6,9 +6,9 @@ import pandas as pd
 import pytest
 from dotenv import load_dotenv
 
-from diffforge.connectors.snowflake.connector import SnowflakeConnector
-from diffforge.core.factory import ConnectorFactory
-from diffforge.core.models import ConnectionConfig, ConnectionMethod
+from dimer.connectors.snowflake.connector import SnowflakeConnector
+from dimer.core.factory import ConnectorFactory
+from dimer.core.models import ConnectionConfig, ConnectionMethod
 
 # Load environment variables
 load_dotenv()
@@ -76,7 +76,7 @@ class TestSnowflakeIntegration:
     def test_factory_creates_snowflake_connector(self, real_snowflake_config):
         """Test that the factory creates a Snowflake connector correctly."""
         # Make sure Snowflake connector is registered
-        from diffforge.core.factory import _auto_register_connectors
+        from dimer.core.factory import _auto_register_connectors
 
         _auto_register_connectors()
 

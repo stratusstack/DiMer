@@ -1,1 +1,1 @@
-"""Tests for the DiffForge connector system."""
+"""Tests for the DiMer connector system."""

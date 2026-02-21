@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import pandas as pd
 import pytest
 
-from diffforge.connectors.postgresql.connector import PostgreSQLConnector
-from diffforge.connectors.snowflake.connector import SnowflakeConnector
-from diffforge.core.models import ConnectionConfig, ConnectionMethod
+from dimer.connectors.postgresql.connector import PostgreSQLConnector
+from dimer.connectors.snowflake.connector import SnowflakeConnector
+from dimer.core.models import ConnectionConfig, ConnectionMethod
 
 
 class TestSnowflakeConnector:

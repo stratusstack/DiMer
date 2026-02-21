@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Basic usage examples for DiffForge connectors.
+Basic usage examples for DiMer connectors.
 
-This script demonstrates how to use the DiffForge connector system
+This script demonstrates how to use the DiMer connector system
 to connect to different data sources, retrieve metadata, and sample data.
 """
 
@@ -10,10 +10,10 @@ import os
 import pandas as pd
 from typing import Dict, Any
 
-from diffforge.core.models import ConnectionConfig
-from diffforge.core.factory import ConnectorFactory
-from diffforge.core.manager import ConnectionManager
-from diffforge.metrics.collector import get_metrics_collector
+from dimer.core.models import ConnectionConfig
+from dimer.core.factory import ConnectorFactory
+from dimer.core.manager import ConnectionManager
+from dimer.metrics.collector import get_metrics_collector
 
 
 def create_snowflake_config() -> ConnectionConfig:
@@ -302,7 +302,7 @@ def example_type_mapping():
     """Example 5: Type system and data type mapping."""
     print("\n=== Example 5: Type System ===")
     
-    from diffforge.core.types import DataTypeMapper
+    from dimer.core.types import DataTypeMapper
     
     # Show supported sources
     print(f"Supported sources: {DataTypeMapper.get_supported_sources()}")
@@ -333,7 +333,7 @@ def example_type_mapping():
 
 def main():
     """Run all examples."""
-    print("DiffForge Connector Examples")
+    print("DiMer Connector Examples")
     print("=" * 50)
     
     # Run examples

@@ -1,6 +1,6 @@
-# DiffForge: Universal Data Source Connector Module
+# DiMer: Universal Data Source Connector Module
 
-DiffForge is a comprehensive integration and connectivity module for data diffing applications that supports multiple data sources with intelligent fallback mechanisms using object-oriented design patterns.
+DiMer is a comprehensive integration and connectivity module for data diffing applications that supports multiple data sources with intelligent fallback mechanisms using object-oriented design patterns.
 
 ## Features
 
@@ -14,7 +14,7 @@ DiffForge is a comprehensive integration and connectivity module for data diffin
 ## Supported Data Sources
 
 - **Snowflake**: Arrow, Snowpark, Native, SQLAlchemy, JDBC, ODBC
-- **PostgreSQL**: AsyncPG, Psycopg2, SQLAlchemy  
+- **PostgreSQL**: AsyncPG, Psycopg2, SQLAlchemy
 - **MySQL**: PyMySQL, MySQL Connector, SQLAlchemy
 - **BigQuery**: Storage API, Standard Client
 - **Databricks**: SQL Connector, Databricks Connect
@@ -25,23 +25,23 @@ DiffForge is a comprehensive integration and connectivity module for data diffin
 ### Basic Installation
 
 ```bash
-pip install diffforge
+pip install dimer
 ```
 
 ### With Specific Data Source Support
 
 ```bash
 # Snowflake support
-pip install diffforge[snowflake]
+pip install dimer[snowflake]
 
-# PostgreSQL support  
-pip install diffforge[postgresql]
+# PostgreSQL support
+pip install dimer[postgresql]
 
 # All data sources
-pip install diffforge[all]
+pip install dimer[all]
 
 # Development dependencies
-pip install diffforge[dev]
+pip install dimer[dev]
 ```
 
 ## Quick Start
@@ -49,24 +49,16 @@ pip install diffforge[dev]
 ### Basic Usage
 
 ```python
-from diffforge.core.models import ConnectionConfig
-from diffforge.core.factory import ConnectorFactory
+from dimer.core.models import ConnectionConfig
+from dimer.core.factory import ConnectorFactory
 
 # Create connection configuration
 config = ConnectionConfig(
-    host='your-account.snowflakecomputing.com',
-    username='your_username',
-    password='your_password',
-    database='YOUR_DATABASE',
-    schema_name='PUBLIC',
-    extra_params={
-        'warehouse': 'COMPUTE_WH',
-        'role': 'PUBLIC',
-    }
+    # different configuration parameters go here like host
 )
 
 # Create connector
-connector = ConnectorFactory.create_connector('snowflake', config)
+connector = ConnectorFactory.create_connector('<database name>', config)
 
 # Connect with automatic fallback
 connector.connect()
@@ -86,14 +78,14 @@ connector.close()
 ### Connection Manager
 
 ```python
-from diffforge.core.manager import ConnectionManager
+from dimer.core.manager import ConnectionManager
 
 manager = ConnectionManager()
 
 # Create managed connection
 connector = manager.create_connection(
-    connection_id='snowflake_prod',
-    source_type='snowflake',
+    connection_id='<connection name>',
+    source_type='<database name>',
     connection_config=config
 )
 
@@ -101,11 +93,11 @@ connector = manager.create_connection(
 connections = manager.list_connections()
 
 # Test connection
-if manager.test_connection('snowflake_prod'):
+if manager.test_connection('<connection name>'):
     print("Connection is healthy")
 
 # Get connection for use
-conn = manager.get_connection('snowflake_prod')
+conn = manager.get_connection('<connection name>')
 
 # Clean up all connections
 manager.close_all()
@@ -114,7 +106,7 @@ manager.close_all()
 ### Performance Monitoring
 
 ```python
-from diffforge.metrics.collector import get_metrics_collector
+from dimer.metrics.collector import get_metrics_collector
 
 # Get global metrics collector
 collector = get_metrics_collector()
@@ -125,7 +117,7 @@ for source_method, performance in stats.items():
     print(f"{source_method}: {performance.success_rate:.1%} success rate")
 
 # Method comparison for a specific source
-comparison = collector.get_method_comparison('snowflake')
+comparison = collector.get_method_comparison('<database name>')
 for method, data in comparison.items():
     print(f"{method}: avg {data['performance_stats'].avg_duration:.2f}s")
 ```
@@ -145,7 +137,7 @@ for method, data in comparison.items():
 Each connector implements multiple connection methods in order of preference:
 
 1. **Optimized Methods**: Native high-performance drivers (Arrow, AsyncPG)
-2. **Standard Methods**: Common database adapters (psycopg2, native connectors)  
+2. **Standard Methods**: Common database adapters (psycopg2, native connectors)
 3. **Fallback Methods**: Universal adapters (JDBC, ODBC)
 
 ### Type System
@@ -165,7 +157,7 @@ All data types are mapped to a common type system:
 ### Connection Configuration
 
 ```python
-from diffforge.core.models import ConnectionConfig
+from dimer.core.models import ConnectionConfig
 
 config = ConnectionConfig(
     host='localhost',
@@ -174,25 +166,25 @@ config = ConnectionConfig(
     password='password',
     database='mydb',
     schema_name='public',
-    
+
     # Connection pool settings
     pool_size=5,
     max_overflow=10,
     pool_timeout=30,
-    
-    # Retry settings  
+
+    # Retry settings
     max_retries=3,
     retry_delay=1.0,
     backoff_factor=2.0,
-    
+
     # Timeout settings
     connect_timeout=30,
     query_timeout=300,
-    
+
     # Source-specific parameters
     extra_params={
         'ssl_mode': 'require',
-        'application_name': 'diffforge'
+        'application_name': 'dimer'
     }
 )
 ```
@@ -218,7 +210,7 @@ export POSTGRES_DATABASE=postgres
 
 ## Error Handling
 
-DiffForge provides comprehensive error handling with automatic fallback:
+DiMer provides comprehensive error handling with automatic fallback:
 
 ```python
 try:
@@ -226,7 +218,7 @@ try:
     connector.connect()  # Tries multiple methods automatically
 except ConnectionError as e:
     print(f"All connection methods failed: {e}")
-    
+
 # Check which methods were attempted
 metrics = connector.get_connection_metrics()
 for attempt in metrics:
@@ -242,7 +234,7 @@ Run the test suite:
 pytest
 
 # Run with coverage
-pytest --cov=diffforge
+pytest --cov=dimer
 
 # Run specific test categories
 pytest -m unit
@@ -292,6 +284,6 @@ MIT License - see LICENSE file for details.
 
 ## Support
 
-- **Documentation**: [docs.diffforge.io](https://docs.diffforge.io)
-- **Issues**: [GitHub Issues](https://github.com/diffforge/diffforge/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/diffforge/diffforge/discussions)
+- **Documentation**: [docs.dimer.io](https://docs.dimer.io)
+- **Issues**: [GitHub Issues](https://github.com/dimer/dimer/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/dimer/dimer/discussions)

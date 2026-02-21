@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from diffforge.metrics.collector import (
+from dimer.metrics.collector import (
     ConnectionAttempt,
     MetricsCollector,
     QueryMetrics,

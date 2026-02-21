@@ -7,8 +7,8 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import structlog
 
-from diffforge.core.base import DataSourceConnector
-from diffforge.core.models import (
+from dimer.core.base import DataSourceConnector
+from dimer.core.models import (
     ColumnMetadata,
     ConnectionConfig,
     ConnectionMethod,

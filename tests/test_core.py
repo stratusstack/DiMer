@@ -5,16 +5,16 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from diffforge.core.base import DataSourceConnector
-from diffforge.core.factory import ConnectorFactory
-from diffforge.core.manager import ConnectionManager
-from diffforge.core.models import (
+from dimer.core.base import DataSourceConnector
+from dimer.core.factory import ConnectorFactory
+from dimer.core.manager import ConnectionManager
+from dimer.core.models import (
     ColumnMetadata,
     ConnectionConfig,
     ConnectionMethod,
     TableMetadata,
 )
-from diffforge.core.types import DataTypeMapper
+from dimer.core.types import DataTypeMapper
 
 
 class TestDataTypeMapper:

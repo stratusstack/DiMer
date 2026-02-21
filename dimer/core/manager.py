@@ -7,9 +7,9 @@ from typing import Any, Dict, List, Optional
 
 import structlog
 
-from diffforge.core.base import DataSourceConnector
-from diffforge.core.factory import ConnectorFactory
-from diffforge.core.models import ConnectionConfig
+from dimer.core.base import DataSourceConnector
+from dimer.core.factory import ConnectorFactory
+from dimer.core.models import ConnectionConfig
 
 logger = structlog.get_logger(__name__)
 

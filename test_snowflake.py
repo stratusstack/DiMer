@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DiffForge Snowflake Connector Test Script
+DiMer Snowflake Connector Test Script
 
 This script performs comprehensive testing of the Snowflake connector including:
 1. Code quality checks (formatting, linting, type checking)
@@ -27,9 +27,9 @@ from typing import List, Optional
 import pandas as pd
 from dotenv import load_dotenv
 
-from diffforge.connectors.snowflake.connector import SnowflakeConnector
-from diffforge.core.factory import ConnectorFactory
-from diffforge.core.models import ConnectionConfig, ConnectionMethod
+from dimer.connectors.snowflake.connector import SnowflakeConnector
+from dimer.core.factory import ConnectorFactory
+from dimer.core.models import ConnectionConfig, ConnectionMethod
 
 
 class Colors:
@@ -197,29 +197,29 @@ def run_code_quality_checks() -> bool:
     
     # Black formatting
     if run_command(
-        ["black", "--check", "diffforge/", "tests/", "--line-length", "88"],
+        ["black", "--check", "dimer/", "tests/", "--line-length", "88"],
         "Code formatting check with Black",
         check=False
     ):
         print_success("Code is properly formatted")
     else:
-        print_warning("Code formatting issues found. Run: black diffforge/ tests/ --line-length 88")
+        print_warning("Code formatting issues found. Run: black dimer/ tests/ --line-length 88")
         success = False
     
     # Import sorting
     if run_command(
-        ["isort", "diffforge/", "tests/", "--check-only"],
+        ["isort", "dimer/", "tests/", "--check-only"],
         "Import sorting check with isort",
         check=False
     ):
         print_success("Imports are properly sorted")
     else:
-        print_warning("Import sorting issues found. Run: isort diffforge/ tests/")
+        print_warning("Import sorting issues found. Run: isort dimer/ tests/")
         success = False
     
     # Linting with flake8
     if run_command(
-        ["flake8", "diffforge/", "--max-line-length=88", "--extend-ignore=E203,W503"],
+        ["flake8", "dimer/", "--max-line-length=88", "--extend-ignore=E203,W503"],
         "Linting check with flake8",
         check=False
     ):
@@ -230,7 +230,7 @@ def run_code_quality_checks() -> bool:
     
     # Type checking (optional - don't fail on this)
     run_command(
-        ["mypy", "diffforge/", "--no-strict-optional", "--ignore-missing-imports"],
+        ["mypy", "dimer/", "--no-strict-optional", "--ignore-missing-imports"],
         "Type checking with mypy",
         check=False
     )
@@ -412,7 +412,7 @@ def benchmark_connection_methods(config: ConnectionConfig) -> None:
 
 def main():
     """Main function"""
-    parser = argparse.ArgumentParser(description="DiffForge Snowflake Connector Test Script")
+    parser = argparse.ArgumentParser(description="DiMer Snowflake Connector Test Script")
     parser.add_argument("--unit-only", action="store_true", help="Run only unit tests")
     parser.add_argument("--integration-only", action="store_true", help="Run only integration tests")
     parser.add_argument("--skip-quality", action="store_true", help="Skip code quality checks")
