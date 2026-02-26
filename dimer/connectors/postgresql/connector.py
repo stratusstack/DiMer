@@ -237,11 +237,20 @@ class PostgreSQLConnector(DataSourceConnector):
             async def execute_async():
                 async with self.connection.acquire() as conn:
                     if params:
-                        # Convert named parameters to positional for asyncpg
-                        param_values = [
-                            params.get(f"${i+1}", None) for i in range(len(params))
-                        ]
-                        result = await conn.fetch(query, *param_values)
+                        # asyncpg uses $1, $2, ... positional placeholders.
+                        # Convert %(name)s style placeholders and extract values in order.
+                        import re
+                        param_order: list = []
+                        counter = [0]
+
+                        def _replace(m):
+                            param_order.append(m.group(1))
+                            counter[0] += 1
+                            return f"${counter[0]}"
+
+                        converted_query = re.sub(r"%\((\w+)\)s", _replace, query)
+                        param_values = [params[name] for name in param_order]
+                        result = await conn.fetch(converted_query, *param_values)
                     else:
                         result = await conn.fetch(query)
 

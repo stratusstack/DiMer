@@ -79,7 +79,7 @@ class Diffcheck():
             return conn.get_table_metadata(table, schema)
 
         except Exception as e:
-            logger.error(f"Failed to get schema metadata for {table_name}: {e}")
+            logger.error(f"Failed to get schema metadata for {table_name}: {e}", exc_info=True)
             return None
 
     def compare_schemas(self, metadata_a: TableMetadata, metadata_b: TableMetadata) -> Dict[str, Any]:
@@ -310,7 +310,7 @@ class Diffcheck():
             )
 
         except Exception as e:
-            logger.error(f"Error during cross-database comparison: {e}")
+            logger.error(f"Error during cross-database comparison: {e}", exc_info=True)
             return ComparisonResult(
                 match=False,
                 schema_differences=schema_diff,

@@ -1,14 +1,55 @@
 """DiMer command-line data diff utility."""
 
+import logging
 import os
 import sys
+import traceback
 from typing import Dict, List, Optional, Tuple
 
+import structlog
 from dotenv import load_dotenv
 
 from dimer.core.compare import Diffcheck
 from dimer.core.factory import ConnectorFactory
 from dimer.core.models import ComparisonConfig, ComparisonResult, ConnectionConfig
+
+# ---------------------------------------------------------------------------
+# Logging configuration
+# ---------------------------------------------------------------------------
+
+_DEV_MODE: bool = False
+
+
+def _strip_exc_info_in_normal_mode(_, __, event_dict):
+    """Remove exc_info from log events unless running in dev mode."""
+    if not _DEV_MODE:
+        event_dict.pop("exc_info", None)
+    return event_dict
+
+
+def configure_logging(debug: bool) -> None:
+    """Configure structlog and stdlib logging level."""
+    global _DEV_MODE
+    _DEV_MODE = debug
+
+    log_level = logging.DEBUG if debug else logging.INFO
+    logging.basicConfig(format="%(message)s", stream=sys.stderr, level=log_level)
+
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_log_level,
+            structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S"),
+            structlog.processors.StackInfoRenderer(),
+            _strip_exc_info_in_normal_mode,
+            structlog.processors.format_exc_info,
+            structlog.dev.ConsoleRenderer(),
+        ],
+        context_class=dict,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -374,10 +415,12 @@ def _connect_with_retry(source_type: str, label: str):
                 if connector.connection_method_used
                 else "unknown"
             )
-            print(_green(f"✓  (via {method})"))
+            print(_green(f"✓  {source_type} (via {method})"))
             return connector
         except Exception as exc:
             print(_red(f"✗\n    {exc}"))
+            if _DEV_MODE:
+                traceback.print_exc()
             ans = input("    Retry? [Y/n]: ").strip().lower()
             if ans not in ("", "y", "yes"):
                 return None
@@ -390,6 +433,7 @@ def _connect_with_retry(source_type: str, label: str):
 
 def main() -> None:
     """Entry point for the DiMer interactive data diff CLI."""
+    configure_logging(debug="-dev" in sys.argv)
     load_dotenv()
 
     # Header
@@ -463,6 +507,8 @@ def main() -> None:
                     display_result(result)
                 except Exception as exc:
                     print(f"\n  {_red('✗  Comparison failed:')} {exc}")
+                    if _DEV_MODE:
+                        traceback.print_exc()
 
             # Continue?
             ans = input("\n  Compare another table? [Y/n]: ").strip().lower()
