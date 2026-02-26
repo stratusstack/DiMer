@@ -1,6 +1,8 @@
 # DiMer: Universal Data Source Connector Module
 
-DiMer is a comprehensive integration and connectivity module for data diffing applications that supports multiple data sources with intelligent fallback mechanisms using object-oriented design patterns.
+DiMer - Difference Modeler is a toolkit for  performing value-level comparisons between two datasets, such as database tables, to identify differences inRows added, removed, or modified. It acts like git diff for data, helping engineers validate data quality during migrations, testing, and monitoring. It allows for comparing data across different environments or databases. 
+
+It provides comprehensive integration and connectivity module for data diffing applications that supports multiple data sources with intelligent fallback mechanisms.
 
 ## Features
 

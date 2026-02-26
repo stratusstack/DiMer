@@ -221,6 +221,9 @@ class DataTypeMapper:
         base_type = native_type.split("(")[0].strip()
         if base_type in type_mapping:
             return type_mapping[base_type]
+        for native_key, common_type in type_mapping.items():
+            if native_key.upper() == base_type:
+                return common_type
 
         # Default fallback
         return "string"

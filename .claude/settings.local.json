@@ -1,9 +1,24 @@
 {
   "permissions": {
     "allow": [
-      "Bash(mkdir:*)"
+      "Bash(mkdir:*)",
+      "Bash(done)",
+      "Bash(ls:*)",
+      "Bash(wc:*)",
+      "Bash(head:*)"
     ],
-    "deny": [],
+    "deny": [
+      "Read(.env)",
+      "Read(localenv/**)",
+      "Read(node_modules/**)",
+      "Read(dist/**)",
+      "Read(build/**)",
+      "Read(.git/**)"
+    ],
     "ask": []
-  }
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "postgres"
+  ]
 }

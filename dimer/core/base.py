@@ -6,8 +6,6 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import structlog
-from tenacity import retry, stop_after_attempt, wait_exponential
-
 from dimer.core.models import (
     ColumnMetadata,
     ConnectionConfig,
@@ -15,6 +13,7 @@ from dimer.core.models import (
     QueryResult,
     TableMetadata,
 )
+from dimer.metrics.collector import get_metrics_collector
 
 logger = structlog.get_logger(__name__)
 
@@ -187,12 +186,24 @@ class DataSourceConnector(ABC):
             }
         )
 
-    @retry(
-        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10)
-    )
+        # Also feed into the global MetricsCollector
+        try:
+            collector = get_metrics_collector()
+            collector.record_connection_attempt(
+                source_type=self.__class__.__name__.replace("Connector", "").lower(),
+                method=method,
+                success=success,
+                duration=duration,
+                error_message=error_message,
+            )
+        except Exception:
+            pass  # Don't let metrics collection failures affect connectivity
+
     def execute_query(self, query: str, params: Optional[Dict] = None) -> QueryResult:
         """
         Execute arbitrary query and return results with retry logic.
+
+        Uses max_retries, retry_delay, and backoff_factor from ConnectionConfig.
 
         Args:
             query: SQL query to execute
@@ -204,43 +215,55 @@ class DataSourceConnector(ABC):
         if not self.connection:
             self.connect()
 
-        start_time = time.time()
+        max_retries = self.connection_config.max_retries
+        retry_delay = self.connection_config.retry_delay
+        backoff_factor = self.connection_config.backoff_factor
+        last_exception = None
 
-        try:
-            result_data = self._execute_query_internal(query, params)
-            execution_time = time.time() - start_time
+        for attempt in range(1, max_retries + 1):
+            start_time = time.time()
+            try:
+                result_data = self._execute_query_internal(query, params)
+                execution_time = time.time() - start_time
 
-            # Determine rows affected
-            rows_affected = 0
-            if hasattr(result_data, "__len__"):
-                rows_affected = len(result_data)
-            elif hasattr(result_data, "shape"):
-                rows_affected = result_data.shape[0]
+                # Determine rows affected
+                rows_affected = 0
+                if hasattr(result_data, "__len__"):
+                    rows_affected = len(result_data)
+                elif hasattr(result_data, "shape"):
+                    rows_affected = result_data.shape[0]
 
-            return QueryResult(
-                data=result_data,
-                execution_time=execution_time,
-                rows_affected=rows_affected,
-                query=query,
-                metadata={
-                    "connection_method": (
-                        self.connection_method_used.value
-                        if self.connection_method_used
-                        else None
-                    ),
-                    "params": params,
-                },
-            )
+                return QueryResult(
+                    data=result_data,
+                    execution_time=execution_time,
+                    rows_affected=rows_affected,
+                    query=query,
+                    metadata={
+                        "connection_method": (
+                            self.connection_method_used.value
+                            if self.connection_method_used
+                            else None
+                        ),
+                        "params": params,
+                    },
+                )
 
-        except Exception as e:
-            execution_time = time.time() - start_time
-            logger.error(
-                "Query execution failed",
-                query=query[:100] + "..." if len(query) > 100 else query,
-                error=str(e),
-                execution_time=execution_time,
-            )
-            raise
+            except Exception as e:
+                execution_time = time.time() - start_time
+                last_exception = e
+                logger.error(
+                    "Query execution failed",
+                    query=query[:100] + "..." if len(query) > 100 else query,
+                    error=str(e),
+                    execution_time=execution_time,
+                    attempt=attempt,
+                    max_retries=max_retries,
+                )
+                if attempt < max_retries:
+                    wait_time = retry_delay * (backoff_factor ** (attempt - 1))
+                    time.sleep(wait_time)
+
+        raise last_exception  # type: ignore[misc]
 
     @abstractmethod
     def _execute_query_internal(

@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 
 
 class ConnectionMethod(Enum):
@@ -55,6 +55,8 @@ class TableMetadata:
     """Metadata for a database table."""
 
     columns: List[ColumnMetadata]
+    name: Optional[str] = None
+    schema: Optional[str] = None
     row_count: Optional[int] = None
     size_bytes: Optional[int] = None
     last_modified: Optional[datetime] = None
@@ -118,3 +120,22 @@ class ConnectionMetrics:
     query_count: int = 0
     total_query_time: float = 0.0
     bytes_transferred: int = 0
+
+
+class ComparisonConfig(TypedDict):
+    """Configuration for one side of a table comparison."""
+
+    fq_table_name: str
+    keys: List[str]
+
+
+@dataclass
+class ComparisonResult:
+    """Result of a table comparison operation."""
+
+    match: bool
+    row_count: int = 0
+    schema_differences: Optional[Dict[str, Any]] = None
+    common_columns: Optional[List[str]] = None
+    algorithm: Optional[str] = None
+    error: Optional[str] = None

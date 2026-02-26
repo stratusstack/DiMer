@@ -327,19 +327,36 @@ class ConnectionManager:
         while self._cleanup_running:
             try:
                 current_time = time.time()
-                expired_connections = []
 
                 with self._lock:
-                    for connection_id, last_used in self._last_used.items():
-                        if current_time - last_used > self._connection_timeout:
-                            expired_connections.append(connection_id)
+                    expired_connections = [
+                        connection_id
+                        for connection_id, last_used in self._last_used.items()
+                        if current_time - last_used > self._connection_timeout
+                    ]
 
-                # Remove expired connections
-                for connection_id in expired_connections:
-                    logger.info(
-                        "Removing expired connection", connection_id=connection_id
-                    )
-                    self.remove_connection(connection_id)
+                    # Remove expired connections while still holding the lock
+                    for connection_id in expired_connections:
+                        logger.info(
+                            "Removing expired connection", connection_id=connection_id
+                        )
+                        connector = self._connections.get(connection_id)
+                        if connector:
+                            try:
+                                connector.close()
+                            except Exception as e:
+                                logger.warning(
+                                    "Error closing expired connection",
+                                    connection_id=connection_id,
+                                    error=str(e),
+                                )
+                            del self._connections[connection_id]
+                            del self._connection_configs[connection_id]
+                            del self._connection_metadata[connection_id]
+                            del self._last_used[connection_id]
+                            for pool in self._connection_pools.values():
+                                if connector in pool:
+                                    pool.remove(connector)
 
                 # Sleep for 60 seconds before next cleanup
                 time.sleep(60)

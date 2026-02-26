@@ -24,6 +24,10 @@ class BigQueryConnector(DataSourceConnector):
     # BigQuery-specific configuration
     DEFAULT_LOCATION = "US"
     MAX_SAMPLE_ROWS = 1000000
+    DIALECTS = {
+        "hash": "MD5(CAST({COL} AS STRING))",
+        "concatenation": "||"
+    }
 
     def get_required_params(self) -> List[str]:
         """Return list of required connection parameters for BigQuery."""

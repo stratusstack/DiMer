@@ -24,6 +24,10 @@ class MySQLConnector(DataSourceConnector):
     DEFAULT_PORT = 3306
     DEFAULT_CHARSET = "utf8mb4"
     MAX_SAMPLE_ROWS = 100000
+    DIALECTS = {
+        "hash": "MD5(CONCAT({COL}))",
+        "concatenation": ", "
+    }
 
     def get_required_params(self) -> List[str]:
         """Return list of required connection parameters for MySQL."""

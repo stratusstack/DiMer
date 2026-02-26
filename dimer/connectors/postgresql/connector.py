@@ -25,6 +25,10 @@ class PostgreSQLConnector(DataSourceConnector):
     DEFAULT_PORT = 5432
     DEFAULT_SCHEMA = "public"
     MAX_SAMPLE_ROWS = 100000
+    DIALECTS = {
+        "hash": "MD5({COL}::text)",
+        "concatenation": "||"
+    }
 
     def get_required_params(self) -> List[str]:
         """Return list of required connection parameters for PostgreSQL."""
@@ -66,7 +70,6 @@ class PostgreSQLConnector(DataSourceConnector):
             "user": self.connection_config.username,
             "password": self.connection_config.password,
             "database": self.connection_config.database,
-            "command_timeout": self.connection_config.query_timeout,
         }
 
         # Add SSL parameters if specified
@@ -86,7 +89,6 @@ class PostgreSQLConnector(DataSourceConnector):
 
         # Run async pool creation
         loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
 
         try:
             pool = loop.run_until_complete(create_pool())

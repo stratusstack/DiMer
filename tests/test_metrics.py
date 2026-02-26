@@ -80,8 +80,8 @@ class TestMetricsCollector:
         assert sf_stats.total_attempts == 3
         assert sf_stats.successful_attempts == 2
         assert sf_stats.failed_attempts == 1
-        assert sf_stats.success_rate == 2 / 3
-        assert sf_stats.avg_duration == 1.17  # (1.0 + 2.0 + 0.5) / 3
+        assert sf_stats.success_rate == pytest.approx(2 / 3)
+        assert sf_stats.avg_duration == pytest.approx((1.0 + 2.0 + 0.5) / 3)
 
         # Check postgresql stats
         pg_stats = stats["postgresql_asyncpg"]
@@ -145,7 +145,7 @@ class TestMetricsCollector:
         assert stats["successful_queries"] == 2
         assert stats["failed_queries"] == 1
         assert stats["success_rate"] == 2 / 3
-        assert stats["avg_execution_time"] == 0.15  # (0.1 + 0.2) / 2
+        assert stats["avg_execution_time"] == pytest.approx(0.15)  # (0.1 + 0.2) / 2
         assert stats["total_rows"] == 3  # 1 + 2
         assert stats["total_bytes"] == 300  # 100 + 200
 

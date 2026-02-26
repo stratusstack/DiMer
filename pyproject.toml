@@ -74,6 +74,9 @@ dev = [
     "python-dotenv>=1.0.0",
 ]
 
+[project.scripts]
+dimer-diff = "dimer.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/dimer/dimer"
 Documentation = "https://dimer.readthedocs.io"

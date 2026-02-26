@@ -241,13 +241,15 @@ class TestPostgreSQLConnector:
     @patch("asyncpg.create_pool")
     def test_asyncpg_connection(self, mock_create_pool, postgresql_connection_config):
         """Test AsyncPG connection method."""
-        # Setup async mocks
-        mock_pool = AsyncMock()
+        # Setup mocks - pool itself is not async, only acquire()'s context manager is
+        mock_pool = Mock()
         mock_conn = AsyncMock()
         mock_conn.fetchval.return_value = "PostgreSQL 14.0"
 
-        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+        mock_acquire_ctx = Mock()
+        mock_acquire_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_acquire_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_pool.acquire.return_value = mock_acquire_ctx
 
         async def create_pool_mock(**kwargs):
             return mock_pool

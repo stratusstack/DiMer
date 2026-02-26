@@ -24,6 +24,10 @@ class DatabricksConnector(DataSourceConnector):
     DEFAULT_CATALOG = "main"
     DEFAULT_SCHEMA = "default"
     MAX_SAMPLE_ROWS = 1000000
+    DIALECTS = {
+        "hash": "MD5(CAST({COL} AS STRING))",
+        "concatenation": "||"
+    }
 
     def get_required_params(self) -> List[str]:
         """Return list of required connection parameters for Databricks."""

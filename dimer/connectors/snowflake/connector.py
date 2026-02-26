@@ -27,7 +27,7 @@ class SnowflakeConnector(DataSourceConnector):
     MAX_SAMPLE_ROWS = 100000
     DIALECTS = {
         "hash": "HASH({COL})",
-        "concatination" : "||"
+        "concatenation": "||"
     }
 
     def get_required_params(self) -> List[str]:
@@ -43,7 +43,6 @@ class SnowflakeConnector(DataSourceConnector):
         """
         return [
             ConnectionMethod.ARROW,  # Fastest for large datasets
-            ConnectionMethod.SNOWPARK,  # DataFrame operations
             ConnectionMethod.NATIVE,  # Standard snowflake-connector
             ConnectionMethod.SQLALCHEMY,  # ORM approach
         ]

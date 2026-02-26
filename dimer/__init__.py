@@ -9,17 +9,33 @@ __version__ = "0.1.0"
 __author__ = "DiMer Team"
 
 from dimer.core.base import DataSourceConnector
+from dimer.core.compare import Diffcheck
 from dimer.core.factory import ConnectorFactory
 from dimer.core.manager import ConnectionManager
-from dimer.core.models import ColumnMetadata, ConnectionMethod, TableMetadata
+from dimer.core.models import (
+    ColumnMetadata,
+    ComparisonConfig,
+    ComparisonResult,
+    ConnectionConfig,
+    ConnectionMethod,
+    ConnectionMetrics,
+    QueryResult,
+    TableMetadata,
+)
 from dimer.core.types import DataTypeMapper
 
 __all__ = [
     "DataSourceConnector",
     "ConnectorFactory",
     "ConnectionManager",
+    "ConnectionConfig",
     "ColumnMetadata",
     "TableMetadata",
     "ConnectionMethod",
+    "ConnectionMetrics",
+    "QueryResult",
+    "ComparisonConfig",
+    "ComparisonResult",
+    "Diffcheck",
     "DataTypeMapper",
 ]

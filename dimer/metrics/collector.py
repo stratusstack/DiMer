@@ -441,7 +441,7 @@ class MetricsCollector:
 
         # Calculate percentiles
         sorted_durations = sorted(durations)
-        p95_index = int(0.95 * len(sorted_durations))
+        p95_index = int(0.95 * (len(sorted_durations) - 1))
         p95_duration = sorted_durations[p95_index] if sorted_durations else 0
 
         return PerformanceStats(
@@ -510,6 +510,38 @@ class MetricsCollector:
                 logger.error("Error in metrics cleanup thread", error=str(e))
                 time.sleep(60)  # Wait before retrying
 
+    def _to_dict(self) -> Dict[str, Any]:
+        """Convert metrics to a dictionary representation."""
+        return {
+            "connection_attempts": [
+                {
+                    "source_type": a.source_type,
+                    "method": a.method,
+                    "success": a.success,
+                    "duration": a.duration,
+                    "error_message": a.error_message,
+                    "timestamp": a.timestamp.isoformat(),
+                    "connection_id": a.connection_id,
+                    "metadata": a.metadata,
+                }
+                for a in self._connection_attempts
+            ],
+            "query_metrics": [
+                {
+                    "connection_id": m.connection_id,
+                    "query_hash": m.query_hash,
+                    "execution_time": m.execution_time,
+                    "rows_returned": m.rows_returned,
+                    "bytes_transferred": m.bytes_transferred,
+                    "success": m.success,
+                    "error_message": m.error_message,
+                    "timestamp": m.timestamp.isoformat(),
+                    "connection_method": m.connection_method,
+                }
+                for m in self._query_metrics
+            ],
+        }
+
     def export_metrics(self, format: str = "dict") -> Any:
         """
         Export all metrics data.
@@ -520,37 +552,38 @@ class MetricsCollector:
         Returns:
             Exported metrics data
         """
+        import csv
+        import io
+        import json
+
         with self._lock:
             if format == "dict":
-                return {
-                    "connection_attempts": [
-                        {
-                            "source_type": a.source_type,
-                            "method": a.method,
-                            "success": a.success,
-                            "duration": a.duration,
-                            "error_message": a.error_message,
-                            "timestamp": a.timestamp.isoformat(),
-                            "connection_id": a.connection_id,
-                            "metadata": a.metadata,
-                        }
-                        for a in self._connection_attempts
-                    ],
-                    "query_metrics": [
-                        {
-                            "connection_id": m.connection_id,
-                            "query_hash": m.query_hash,
-                            "execution_time": m.execution_time,
-                            "rows_returned": m.rows_returned,
-                            "bytes_transferred": m.bytes_transferred,
-                            "success": m.success,
-                            "error_message": m.error_message,
-                            "timestamp": m.timestamp.isoformat(),
-                            "connection_method": m.connection_method,
-                        }
-                        for m in self._query_metrics
-                    ],
-                }
+                return self._to_dict()
+            elif format == "json":
+                return json.dumps(self._to_dict(), default=str)
+            elif format == "csv":
+                data = self._to_dict()
+                output = io.StringIO()
+
+                # Write connection attempts
+                if data["connection_attempts"]:
+                    writer = csv.DictWriter(
+                        output, fieldnames=data["connection_attempts"][0].keys()
+                    )
+                    writer.writeheader()
+                    writer.writerows(data["connection_attempts"])
+
+                output.write("\n")
+
+                # Write query metrics
+                if data["query_metrics"]:
+                    writer = csv.DictWriter(
+                        output, fieldnames=data["query_metrics"][0].keys()
+                    )
+                    writer.writeheader()
+                    writer.writerows(data["query_metrics"])
+
+                return output.getvalue()
             else:
                 raise ValueError(f"Unsupported export format: {format}")
 
