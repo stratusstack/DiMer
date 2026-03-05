@@ -27,6 +27,16 @@ def _strip_exc_info_in_normal_mode(_, __, event_dict):
     return event_dict
 
 
+# Third-party loggers that are excessively noisy at DEBUG level.
+_NOISY_LOGGERS = [
+    "snowflake.connector",
+    "botocore",
+    "boto3",
+    "urllib3",
+    "asyncio",
+]
+
+
 def configure_logging(debug: bool) -> None:
     """Configure structlog and stdlib logging level."""
     global _DEV_MODE
@@ -34,6 +44,10 @@ def configure_logging(debug: bool) -> None:
 
     log_level = logging.DEBUG if debug else logging.INFO
     logging.basicConfig(format="%(message)s", stream=sys.stderr, level=log_level)
+
+    # Keep third-party libraries quiet even in dev mode.
+    for name in _NOISY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
 
     structlog.configure(
         processors=[
