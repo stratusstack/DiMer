@@ -12,6 +12,7 @@ It provides comprehensive integration and connectivity module for data diffing a
 - **Connection Management**: Intelligent connection pooling and lifecycle management
 - **Extensible Architecture**: Easy to add new data source connectors
 - **Production Ready**: Comprehensive error handling, logging, and retry mechanisms
+- **Diff History Persistence**: Automatically saves diff runs to SQLite (default) or PostgreSQL for audit trails and trend analysis
 
 ## Supported Data Sources
 
@@ -208,7 +209,56 @@ export POSTGRES_PORT=5432
 export POSTGRES_USER=postgres
 export POSTGRES_PASSWORD=password
 export POSTGRES_DATABASE=postgres
+
+# Persistence (optional — defaults to ~/.dimer/dimer.db)
+export DIMER_DB_URL=sqlite:///~/.dimer/dimer.db       # default
+# export DIMER_DB_URL=postgresql://user:pass@host/dimer  # production
 ```
+
+## Interactive CLI
+
+Run the interactive data diff CLI:
+
+```bash
+dimer-diff
+# or
+python -m dimer
+
+# Enable debug logging and full tracebacks
+python -m dimer -dev
+```
+
+The CLI guides you through four steps:
+
+1. **Select sources** — choose data source type for each side (Snowflake, PostgreSQL, MySQL, BigQuery, Databricks)
+2. **Verify `.env`** — checks that all required credentials are set, with a retry loop if any are missing
+3. **Establish connections** — connects using the best available driver with automatic fallback
+4. **Compare tables** — specify fully-qualified table names and join keys, run the diff, and view results
+
+After each diff you are prompted to **save the results**. DiMer persists diff runs to SQLite by default (`~/.dimer/dimer.db`) — no configuration needed. You can optionally also save original/modified row values for full audit trails.
+
+## Diff History Persistence
+
+DiMer automatically stores diff history so you can track data quality over time.
+
+**Storage backends:**
+
+| Backend | URL format | Use case |
+|---------|-----------|----------|
+| SQLite (default) | `sqlite:///~/.dimer/dimer.db` | Local / development |
+| PostgreSQL | `postgresql://user:pass@host/dimer` | Team / production |
+
+Set `DIMER_DB_URL` to switch backends. If unset, SQLite at `~/.dimer/dimer.db` is used automatically.
+
+**What gets saved:**
+
+- `diff_run` — timestamp, algorithm, execution time, match/mismatch result
+- `diff_result` — aggregate row counts: added, deleted, modified, matched
+- `diff_row` — individual differing rows (up to 100 per run) including key values and mismatched columns
+- `diff_job` — the pair of tables being compared (source + target + key columns)
+- `project_source` — connection metadata (host, port, database — no credentials stored)
+
+**Retention:** after saving, DiMer optionally cleans up old runs for the same job, keeping only the N most recent.
 
 ## Error Handling
 
