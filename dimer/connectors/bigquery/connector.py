@@ -26,7 +26,8 @@ class BigQueryConnector(DataSourceConnector):
     MAX_SAMPLE_ROWS = 1000000
     DIALECTS = {
         "hash": "MD5(CAST({COL} AS STRING))",
-        "concatenation": "||"
+        "concatenation": "||",
+        "cast_to_text": "CAST({COL} AS STRING)",
     }
 
     def get_required_params(self) -> List[str]:

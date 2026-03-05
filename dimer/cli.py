@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 from dimer.core.compare import Diffcheck
 from dimer.core.factory import ConnectorFactory
-from dimer.core.models import ComparisonConfig, ComparisonResult, ConnectionConfig
+from dimer.core.models import ComparisonConfig, DiffRun, ConnectionConfig
 
 # ---------------------------------------------------------------------------
 # Logging configuration
@@ -360,8 +360,8 @@ def detect_or_prompt_keys(connector, fq_table: str, label: str) -> List[str]:
 # ---------------------------------------------------------------------------
 
 
-def display_result(result: ComparisonResult) -> None:
-    """Print a human-readable summary of a ComparisonResult."""
+def display_result(result: DiffRun) -> None:
+    """Print a human-readable summary of a DiffRunResult."""
     print()
     print("  " + "─" * 54)
 
@@ -373,17 +373,28 @@ def display_result(result: ComparisonResult) -> None:
         print(f"  {_red('✗  MISMATCH')}  — tables differ")
 
     if result.algorithm:
-        print(f"  Algorithm   : {result.algorithm}")
+        print(f"  Algorithm      : {result.algorithm}")
+    if result.execution_time_seconds is not None:
+        print(f"  Elapsed        : {result.execution_time_seconds:.2f}s")
 
-    if result.row_count is not None and result.row_count > 0:
-        if result.match:
-            print(f"  Rows checked: {result.row_count}")
-        else:
-            print(f"  Differing   : {result.row_count} rows")
+    # Row count summary
+    s = result.summary
+    if s is not None:
+        print(f"  Source rows    : {s.source_row_count:,}")
+        print(f"  Target rows    : {s.target_row_count:,}")
+        if not result.match:
+            if s.added_count:
+                print(f"  {_green('Added')}          : {s.added_count:,}  (in target, not in source)")
+            if s.deleted_count:
+                print(f"  {_red('Deleted')}        : {s.deleted_count:,}  (in source, not in target)")
+            if s.modified_count:
+                print(f"  {_yellow('Modified')}       : {s.modified_count:,}  (values differ)")
+            print(f"  Matched        : {s.matched_count:,}")
 
     if result.common_columns:
-        print(f"  Common cols : {len(result.common_columns)}")
+        print(f"  Common columns : {len(result.common_columns)}")
 
+    # Schema differences
     diff = result.schema_differences or {}
     only_a = diff.get("columns_only_in_a", [])
     only_b = diff.get("columns_only_in_b", [])
@@ -391,9 +402,9 @@ def display_result(result: ComparisonResult) -> None:
     rc_delta = diff.get("row_count_difference")
 
     if only_a:
-        print(f"  {_yellow('Cols only in Source:')} {', '.join(only_a)}")
+        print(f"  {_yellow('Cols only in source:')} {', '.join(only_a)}")
     if only_b:
-        print(f"  {_yellow('Cols only in Target:')} {', '.join(only_b)}")
+        print(f"  {_yellow('Cols only in target:')} {', '.join(only_b)}")
     if type_diffs:
         print(f"  {_yellow('Type differences:')}")
         for td in type_diffs:
@@ -403,8 +414,26 @@ def display_result(result: ComparisonResult) -> None:
             print(f"    {col}: source={ta.get('type')}  target={tb.get('type')}")
     if rc_delta is not None:
         sign = "+" if rc_delta > 0 else ""
-        print(f"  Row Δ       : {sign}{rc_delta}")
+        print(f"  Row Δ (schema) : {sign}{rc_delta}")
 
+    # Modified row detail (show up to 5 in the CLI)
+    modified = result.modified_rows()
+    detailed = [r for r in modified if r.source_values is not None]
+    if detailed:
+        show = detailed[:5]
+        print(f"\n  {_yellow('Modified row details')} (showing {len(show)} of {len(modified)}):")
+        for row_diff in show:
+            key_str = ", ".join(f"{k}={v}" for k, v in row_diff.key_values.items())
+            print(f"\n  {_bold('Key:')} {key_str}")
+            print(f"  {'Column':<28} {'Source':<20} {'Target'}")
+            print(f"  {'─'*28} {'─'*20} {'─'*20}")
+            for col in (row_diff.mismatched_columns or []):
+                src_val = str(row_diff.source_values.get(col, '')) if row_diff.source_values else ''
+                tgt_val = str(row_diff.target_values.get(col, '')) if row_diff.target_values else ''
+                flag = _red("←")
+                print(f"  {col:<28} {src_val:<20} {tgt_val}  {flag}")
+
+    print()
     print("  " + "─" * 54)
 
 
@@ -438,6 +467,92 @@ def _connect_with_retry(source_type: str, label: str):
             ans = input("    Retry? [Y/n]: ").strip().lower()
             if ans not in ("", "y", "yes"):
                 return None
+
+
+# ---------------------------------------------------------------------------
+# Persistence helpers
+# ---------------------------------------------------------------------------
+
+
+def _save_run(
+    result: DiffRun,
+    src1_type: str,
+    connector1,
+    src2_type: str,
+    connector2,
+    fq1: str,
+    keys1: List[str],
+    fq2: str,
+    keys2: List[str],
+    save_original_values: bool,
+) -> None:
+    """Persist a completed DiffRun to the configured database."""
+    from dimer.persistence.config import get_db_url
+    from dimer.persistence.repository import (
+        delete_old_runs,
+        ensure_defaults,
+        get_db,
+        get_or_create_diff_job,
+        get_or_create_project_source,
+        save_diff_run,
+    )
+
+    db_url = get_db_url()
+    try:
+        with get_db(db_url) as db:
+            project_id, user_id = ensure_defaults(db)
+
+            cfg1 = connector1.connection_config
+            src_a_id = get_or_create_project_source(
+                db,
+                project_id=project_id,
+                source_type=src1_type,
+                source_name=f"{src1_type}:{cfg1.host or ''}:{cfg1.database or ''}",
+                host=cfg1.host,
+                port=cfg1.port,
+                db_name=cfg1.database,
+                user_id=user_id,
+            )
+
+            cfg2 = connector2.connection_config
+            src_b_id = get_or_create_project_source(
+                db,
+                project_id=project_id,
+                source_type=src2_type,
+                source_name=f"{src2_type}:{cfg2.host or ''}:{cfg2.database or ''}",
+                host=cfg2.host,
+                port=cfg2.port,
+                db_name=cfg2.database,
+                user_id=user_id,
+            )
+
+            job_id = get_or_create_diff_job(
+                db, project_id, src_a_id, fq1, src_b_id, fq2, keys1,
+            )
+
+            run_id = save_diff_run(
+                db, result, job_id, fq1, fq2, save_original_values,
+            )
+
+        print(f"  {_green('✓')}  Saved  run {_dim(run_id[:8] + '...')}  job {_dim(job_id[:8] + '...')}")
+        print(f"  DB     : {_dim(db_url)}")
+
+        # Retention prompt
+        ans = input("  Clean up old runs for this job? [y/N]: ").strip().lower()
+        if ans in ("y", "yes"):
+            raw = input("  Keep how many recent runs? [10]: ").strip()
+            keep = int(raw) if raw.isdigit() and int(raw) > 0 else 10
+            with get_db(db_url) as db:
+                deleted = delete_old_runs(db, job_id, keep)
+            if deleted:
+                print(f"  {_dim(f'Removed {deleted} old run(s).')}")
+            else:
+                print(f"  {_dim('Nothing to remove.')}")
+
+    except Exception as exc:
+        print(f"\n  {_yellow('⚠')}  Could not save results: {exc}")
+        if _DEV_MODE:
+            traceback.print_exc()
 
 
 # ---------------------------------------------------------------------------
@@ -517,8 +632,19 @@ def main() -> None:
                 try:
                     db1: ComparisonConfig = {"fq_table_name": fq1, "keys": keys1}
                     db2: ComparisonConfig = {"fq_table_name": fq2, "keys": keys2}
-                    result = Diffcheck(connector1, connector2, db1, db2).compare()
+                    result: DiffRun = Diffcheck(connector1, connector2, db1, db2).compare()
                     display_result(result)
+
+                    ans = input("  Save results? [Y/n]: ").strip().lower()
+                    if ans in ("", "y", "yes"):
+                        sov = input("  Save original values for modified rows? [y/N]: ").strip().lower()
+                        _save_run(
+                            result,
+                            src1, connector1,
+                            src2, connector2,
+                            fq1, keys1, fq2, keys2,
+                            save_original_values=sov in ("y", "yes"),
+                        )
                 except Exception as exc:
                     print(f"\n  {_red('✗  Comparison failed:')} {exc}")
                     if _DEV_MODE:

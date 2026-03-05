@@ -28,7 +28,8 @@ class SnowflakeConnector(DataSourceConnector):
     IDENTIFIER_CASE = "upper"  # Snowflake stores unquoted identifiers as uppercase
     DIALECTS = {
         "hash": "HASH({COL})",
-        "concatenation": "||"
+        "concatenation": "||",
+        "cast_to_text": "TO_VARCHAR({COL})",
     }
 
     def get_required_params(self) -> List[str]:

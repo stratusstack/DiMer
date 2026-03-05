@@ -5,7 +5,9 @@
       "Bash(done)",
       "Bash(ls:*)",
       "Bash(wc:*)",
-      "Bash(head:*)"
+      "Bash(head:*)",
+      "Bash(pytest:*)",
+      "Bash(python:*)"
     ],
     "deny": [
       "Read(.env)",

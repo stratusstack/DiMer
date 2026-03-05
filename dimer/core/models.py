@@ -34,6 +34,14 @@ class ConnectionMethod(Enum):
     PYARROW_DIRECT = "pyarrow_direct"
 
 
+class RowStatus(Enum):
+    """Status of a single row in a diff result."""
+
+    ADDED = "added"        # exists in target but not source
+    DELETED = "deleted"    # exists in source but not target
+    MODIFIED = "modified"  # exists in both but column values differ
+
+
 @dataclass
 class ColumnMetadata:
     """Metadata for a database column."""
@@ -129,13 +137,152 @@ class ComparisonConfig(TypedDict):
     keys: List[str]
 
 
+# ---------------------------------------------------------------------------
+# Diff result models  (DiffRow / DiffResult / DiffRun)
+# ---------------------------------------------------------------------------
+
+
 @dataclass
-class ComparisonResult:
-    """Result of a table comparison operation."""
+class DiffRow:
+    """Diff result for a single row that differs between source and target.
+
+    ``key_values`` is the combination of key column names and their values for
+    that row, e.g. ``{"col_a": "val1", "col_b": "val2"}``.  This uniquely
+    identifies the row across runs and sources regardless of which side it came
+    from.
+
+    ``mismatched_columns`` lists columns with different values between source A
+    and B for this row (MODIFIED rows only).
+
+    ``source_values`` / ``target_values`` store the full row from each source
+    for MODIFIED rows.  They are only populated when ``save_original_values``
+    is enabled on the job, and only for up to ``MAX_DETAIL_ROWS`` rows.
+    """
+
+    # Combination of key column names → values; uniquely identifies the row
+    # across runs and both sources.  E.g. {"col_a": "val1", "col_b": "val2"}.
+    key_values: Dict[str, Any]
+    status: RowStatus
+    # Columns with differing values between source A and B (MODIFIED rows only)
+    mismatched_columns: List[str] = field(default_factory=list)
+    # Full row from source A (populated for MODIFIED rows when save_original_values=True)
+    source_values: Optional[Dict[str, Any]] = None
+    # Full row from source B (populated for MODIFIED rows when save_original_values=True)
+    target_values: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class DiffResult:
+    """Aggregate row counts for a diff run."""
+
+    source_row_count: int = 0
+    target_row_count: int = 0
+    added_count: int = 0      # rows in target not in source
+    deleted_count: int = 0    # rows in source not in target
+    modified_count: int = 0   # rows in both with value differences
+    matched_count: int = 0    # identical rows
+
+    @property
+    def total_differences(self) -> int:
+        return self.added_count + self.deleted_count + self.modified_count
+
+
+@dataclass
+class DiffRun:
+    """
+    Complete result of a single diff run.
+
+    Multiple DiffRun records can exist for the same DiffJob (one per
+    execution).  Serves as an in-memory store for all comparison output and
+    maps to the persistence schema:
+      - DiffRun    → diff_run  (metadata) + diff_run_detail (asset stats)
+      - DiffResult → diff_result (aggregate counts)
+      - DiffRow    → diff_row  (per-row differences)
+    """
 
     match: bool
-    row_count: int = 0
+    summary: Optional[DiffResult] = None
+    # Row-level diffs; ADDED/DELETED always fully populated; MODIFIED capped at MAX_DETAIL_ROWS
+    row_diffs: List[DiffRow] = field(default_factory=list)
+    # Columns only in source, only in target, or with type mismatches
     schema_differences: Optional[Dict[str, Any]] = None
+    # Columns present in both assets that were included in the comparison
     common_columns: Optional[List[str]] = None
-    algorithm: Optional[str] = None
+    algorithm: Optional[str] = None   # 'JOIN_DIFF' | 'CROSS_DB_DIFF'
     error: Optional[str] = None
+    execution_time_seconds: Optional[float] = None
+
+    def added_rows(self) -> List[DiffRow]:
+        return [r for r in self.row_diffs if r.status == RowStatus.ADDED]
+
+    def deleted_rows(self) -> List[DiffRow]:
+        return [r for r in self.row_diffs if r.status == RowStatus.DELETED]
+
+    def modified_rows(self) -> List[DiffRow]:
+        return [r for r in self.row_diffs if r.status == RowStatus.MODIFIED]
+
+
+# ---------------------------------------------------------------------------
+# Persistence domain models
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Project:
+    """A DiMer project grouping related diff jobs."""
+
+    name: str
+    description: Optional[str] = None
+    project_id: Optional[str] = None  # UUID str; set after DB insert
+
+
+@dataclass
+class User:
+    """A DiMer user."""
+
+    name: str
+    email: Optional[str] = None
+    local_cli: bool = False
+    user_id: Optional[str] = None  # UUID str; set after DB insert
+
+
+@dataclass
+class ProjectSource:
+    """A data source registered within a project.
+
+    Only non-sensitive connection fields are stored here (host, port,
+    db_name).  Credentials (username, password, tokens) are never
+    persisted — they stay in environment variables / ``.env``.
+    """
+
+    project_id: str
+    source_type: str       # 'postgresql', 'snowflake', etc.
+    source_name: str       # human label unique within the project
+    host: Optional[str] = None
+    port: Optional[int] = None
+    db_name: Optional[str] = None
+    user_id: Optional[str] = None
+    source_id: Optional[str] = None  # UUID str; set after DB insert
+
+
+@dataclass
+class DiffJob:
+    """Configuration for a recurring diff between two assets.
+
+    A job is uniquely identified by the combination of its two sources,
+    asset names, and key columns.  The same job record is reused across
+    multiple runs so that history accumulates under one job_id.
+    """
+
+    project_id: str
+    source_a_id: str
+    source_a_asset: str    # fully-qualified table name on source A, e.g. 'public.orders'
+    source_b_id: str
+    source_b_asset: str    # fully-qualified table name on source B, e.g. 'PUBLIC.ORDERS'
+    # Columns used as join keys to match rows between the two assets, e.g. ["col_a", "col_b"]
+    key_columns: List[str]
+    # Maximum number of historical runs to retain for this job before pruning
+    snapshot_retention_count: int = 10
+    # When True, source_values and target_values are stored in diff_row for MODIFIED rows
+    save_original_values: bool = False
+    job_id: Optional[str] = None  # UUID str; set after DB insert

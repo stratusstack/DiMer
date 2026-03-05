@@ -26,7 +26,8 @@ class MySQLConnector(DataSourceConnector):
     MAX_SAMPLE_ROWS = 100000
     DIALECTS = {
         "hash": "MD5(CONCAT({COL}))",
-        "concatenation": ", "
+        "concatenation": ", ",
+        "cast_to_text": "CAST({COL} AS CHAR)",
     }
 
     def get_required_params(self) -> List[str]:

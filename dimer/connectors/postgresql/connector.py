@@ -27,7 +27,8 @@ class PostgreSQLConnector(DataSourceConnector):
     MAX_SAMPLE_ROWS = 100000
     DIALECTS = {
         "hash": "MD5({COL}::text)",
-        "concatenation": "||"
+        "concatenation": "||",
+        "cast_to_text": "CAST({COL} AS TEXT)",
     }
 
     def get_required_params(self) -> List[str]:
