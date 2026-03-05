@@ -16,14 +16,26 @@ logger = structlog.get_logger(__name__)
 _IDENTIFIER_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$')
 
 
-def _validate_identifier(name: str) -> str:
-    """Validate and quote a SQL identifier to prevent injection."""
+def _validate_identifier(name: str, case: str = "preserve") -> str:
+    """Validate and quote a SQL identifier to prevent injection.
+
+    Args:
+        name: The identifier to validate and quote (may be dot-separated).
+        case: How to transform each part before quoting.
+              'upper'    — uppercase (Snowflake convention)
+              'lower'    — lowercase (PostgreSQL/MySQL convention)
+              'preserve' — leave as-is (default)
+    """
     # Strip existing quotes for validation
     stripped = name.replace('"', '')
     if not _IDENTIFIER_RE.match(stripped):
         raise ValueError(f"Invalid SQL identifier: {name!r}")
-    # Quote each part of a dot-separated identifier
+    # Apply case transformation and quote each part
     parts = stripped.split('.')
+    if case == "upper":
+        parts = [p.upper() for p in parts]
+    elif case == "lower":
+        parts = [p.lower() for p in parts]
     return '.'.join(f'"{part}"' for part in parts)
 
 
@@ -85,6 +97,8 @@ class Diffcheck():
     def compare_schemas(self, metadata_a: TableMetadata, metadata_b: TableMetadata) -> Dict[str, Any]:
         """
         Compare table schemas and return detailed differences.
+        Uses case-insensitive column name matching to handle databases with
+        different identifier casing conventions (e.g. Snowflake UPPER vs PostgreSQL lower).
         """
         differences: Dict[str, Any] = {
             'columns_only_in_a': [],
@@ -94,13 +108,15 @@ class Diffcheck():
             'size_difference': None
         }
 
-        # Create column dictionaries for comparison
-        cols_a = {col.name: col for col in metadata_a.columns}
-        cols_b = {col.name: col for col in metadata_b.columns}
+        # Create column dictionaries keyed by lowercase name for case-insensitive comparison
+        cols_a = {col.name.lower(): col for col in metadata_a.columns}
+        cols_b = {col.name.lower(): col for col in metadata_b.columns}
 
-        # Find columns only in each table
-        differences['columns_only_in_a'] = list(set(cols_a.keys()) - set(cols_b.keys()))
-        differences['columns_only_in_b'] = list(set(cols_b.keys()) - set(cols_a.keys()))
+        # Find columns only in each table (report using original names)
+        only_in_a_keys = set(cols_a.keys()) - set(cols_b.keys())
+        only_in_b_keys = set(cols_b.keys()) - set(cols_a.keys())
+        differences['columns_only_in_a'] = [cols_a[k].name for k in only_in_a_keys]
+        differences['columns_only_in_b'] = [cols_b[k].name for k in only_in_b_keys]
 
         # Check data type differences for common columns
         common_columns = set(cols_a.keys()) & set(cols_b.keys())
@@ -159,10 +175,10 @@ class Diffcheck():
             if schema_diff['column_type_differences']:
                 logger.warning(f"Column type differences: {schema_diff['column_type_differences']}")
 
-            # For data comparison, use only common columns (set-based lookup)
-            cols_b_names = {c.name for c in metadata_b.columns}
+            # For data comparison, use only common columns (case-insensitive lookup)
+            cols_b_names = {c.name.lower() for c in metadata_b.columns}
             common_columns = [col.name for col in metadata_a.columns
-                            if col.name in cols_b_names]
+                            if col.name.lower() in cols_b_names]
 
             if not common_columns:
                 raise ValueError("No common columns found between tables")
@@ -252,12 +268,18 @@ class Diffcheck():
         schema_diff = self.compare_schemas(metadata_a, metadata_b)
         logger.info(f"Schema differences: {schema_diff}")
 
-        # Get common columns for comparison (set-based lookup)
-        cols_b_names = {c.name for c in metadata_b.columns}
-        common_columns = [col.name for col in metadata_a.columns
-                        if col.name in cols_b_names]
+        # Get common columns for comparison (case-insensitive lookup)
+        cols_b_names = {c.name.lower(): c.name for c in metadata_b.columns}
+        common_columns_a = []
+        common_columns_b = []
+        for col in metadata_a.columns:
+            col_lower = col.name.lower()
+            if col_lower in cols_b_names:
+                common_columns_a.append(col.name)
+                common_columns_b.append(cols_b_names[col_lower])
+        common_columns = common_columns_a  # reported as common column list
 
-        if not common_columns:
+        if not common_columns_a:
             logger.error("No common columns found for cross-database comparison")
             return ComparisonResult(
                 match=False,
@@ -265,21 +287,24 @@ class Diffcheck():
                 error="No common columns found",
             )
 
-        logger.info(f"Comparing {len(common_columns)} common columns")
+        logger.info(f"Comparing {len(common_columns_a)} common columns")
 
         try:
             # Get sample data from both tables to compare
             sample_size = 1000
 
-            # Build queries with quoted identifiers
-            safe_cols = ', '.join(_validate_identifier(c) for c in common_columns)
-            safe_keys_a = ', '.join(_validate_identifier(k) for k in keys_a)
-            safe_keys_b = ', '.join(_validate_identifier(k) for k in keys_b)
-            safe_table_a = _validate_identifier(table_a)
-            safe_table_b = _validate_identifier(table_b)
+            # Build queries using source-specific column names and each connector's identifier casing
+            case_a = getattr(self._left_connector, "IDENTIFIER_CASE", "preserve")
+            case_b = getattr(self._right_connector, "IDENTIFIER_CASE", "preserve")
+            safe_cols_a = ', '.join(_validate_identifier(c, case_a) for c in common_columns_a)
+            safe_cols_b = ', '.join(_validate_identifier(c, case_b) for c in common_columns_b)
+            safe_keys_a = ', '.join(_validate_identifier(k, case_a) for k in keys_a)
+            safe_keys_b = ', '.join(_validate_identifier(k, case_b) for k in keys_b)
+            safe_table_a = _validate_identifier(table_a, case_a)
+            safe_table_b = _validate_identifier(table_b, case_b)
 
-            query_a = f"SELECT {safe_cols} FROM {safe_table_a} ORDER BY {safe_keys_a} LIMIT {sample_size}"
-            query_b = f"SELECT {safe_cols} FROM {safe_table_b} ORDER BY {safe_keys_b} LIMIT {sample_size}"
+            query_a = f"SELECT {safe_cols_a} FROM {safe_table_a} ORDER BY {safe_keys_a} LIMIT {sample_size}"
+            query_b = f"SELECT {safe_cols_b} FROM {safe_table_b} ORDER BY {safe_keys_b} LIMIT {sample_size}"
 
             logger.info("Executing sample queries for comparison")
 
@@ -351,20 +376,22 @@ class Diffcheck():
         if len(keys_a) != len(keys_b):
             raise ValueError("Join keys must have the same length")
 
-        # Validate and quote all identifiers
-        safe_table_a = _validate_identifier(table_a)
-        safe_table_b = _validate_identifier(table_b)
+        # Validate and quote all identifiers using each connector's casing convention
+        case_a = getattr(self._left_connector, "IDENTIFIER_CASE", "preserve")
+        case_b = getattr(self._right_connector, "IDENTIFIER_CASE", "preserve")
+        safe_table_a = _validate_identifier(table_a, case_a)
+        safe_table_b = _validate_identifier(table_b, case_b)
 
         # Build ON clause with quoted identifiers
         on_conditions = [
-            f"{alias_a}.{_validate_identifier(ka)} = {alias_b}.{_validate_identifier(kb)}"
+            f"{alias_a}.{_validate_identifier(ka, case_a)} = {alias_b}.{_validate_identifier(kb, case_b)}"
             for ka, kb in zip(keys_a, keys_b)
         ]
         on_clause = " AND ".join(on_conditions)
 
         # Build concatenated column expressions for hashing
-        safe_cols_a = [f"{alias_a}.{_validate_identifier(col)}" for col in column_list_a]
-        safe_cols_b = [f"{alias_b}.{_validate_identifier(col)}" for col in column_list_b]
+        safe_cols_a = [f"{alias_a}.{_validate_identifier(col, case_a)}" for col in column_list_a]
+        safe_cols_b = [f"{alias_b}.{_validate_identifier(col, case_b)}" for col in column_list_b]
 
         col_expr_a = f"{concatenation_dialect_a}".join(safe_cols_a)
         col_expr_b = f"{concatenation_dialect_b}".join(safe_cols_b)

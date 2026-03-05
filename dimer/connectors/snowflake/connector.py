@@ -25,6 +25,7 @@ class SnowflakeConnector(DataSourceConnector):
     DEFAULT_WAREHOUSE = "COMPUTE_WH"
     DEFAULT_ROLE = "PUBLIC"
     MAX_SAMPLE_ROWS = 100000
+    IDENTIFIER_CASE = "upper"  # Snowflake stores unquoted identifiers as uppercase
     DIALECTS = {
         "hash": "HASH({COL})",
         "concatenation": "||"

@@ -327,8 +327,19 @@ class PostgreSQLConnector(DataSourceConnector):
         ORDER BY ordinal_position
         """
 
+        logger.debug(
+            "get_table_metadata: fetching columns",
+            schema=schema,
+            table_name=table_name,
+        )
         columns_df = self._execute_query_internal(
             columns_query, {"schema": schema, "table_name": table_name}
+        )
+        logger.debug(
+            "get_table_metadata: columns_df result",
+            row_count=len(columns_df),
+            columns=list(columns_df.columns) if not columns_df.empty else [],
+            first_rows=columns_df.head(3).to_dict("records") if not columns_df.empty else [],
         )
 
         # Build column metadata
@@ -369,9 +380,9 @@ class PostgreSQLConnector(DataSourceConnector):
 
         # Query for table statistics
         stats_query = """
-        SELECT 
+        SELECT
             schemaname,
-            tablename,
+            relname as tablename,
             n_tup_ins as inserts,
             n_tup_upd as updates,
             n_tup_del as deletes,
@@ -381,8 +392,8 @@ class PostgreSQLConnector(DataSourceConnector):
             last_autovacuum,
             last_analyze,
             last_autoanalyze
-        FROM pg_stat_user_tables 
-        WHERE schemaname = %(schema)s AND tablename = %(table_name)s
+        FROM pg_stat_user_tables
+        WHERE schemaname = %(schema)s AND relname = %(table_name)s
         """
 
         stats_df = self._execute_query_internal(
