@@ -30,6 +30,7 @@ class SnowflakeConnector(DataSourceConnector):
         "hash": "HASH({COL})",
         "concatenation": "||",
         "cast_to_text": "TO_VARCHAR({COL})",
+        "aggregate_hash": "BIT_XOR(HASH({COL}))",
     }
 
     def get_required_params(self) -> List[str]:

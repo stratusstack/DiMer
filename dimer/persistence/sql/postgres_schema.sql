@@ -55,10 +55,11 @@ CREATE TABLE IF NOT EXISTS diff_run (
     job_id                 UUID NOT NULL REFERENCES diff_job(job_id),
     run_at                 TIMESTAMPTZ NOT NULL,
     status                 VARCHAR NOT NULL,     -- 'success' | 'failed'
-    algorithm              VARCHAR,              -- 'JOIN_DIFF' | 'CROSS_DB_DIFF'
+    algorithm              VARCHAR,              -- 'JOIN_DIFF' | 'HASH_DIFF' | 'CROSS_DB_DIFF' | 'BISECTION'
     execution_time_seconds DOUBLE PRECISION,
     match                  BOOLEAN,              -- TRUE = tables identical
-    error                  TEXT                 -- error message if status = 'failed'
+    error                  TEXT,                 -- error message if status = 'failed'
+    metadata               JSONB                -- algorithm-specific stats (e.g. bisection)
 );
 
 -- Similar to diff_run but with additional details

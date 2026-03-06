@@ -29,6 +29,7 @@ class PostgreSQLConnector(DataSourceConnector):
         "hash": "MD5({COL}::text)",
         "concatenation": "||",
         "cast_to_text": "CAST({COL} AS TEXT)",
+        "aggregate_hash": "BIT_XOR(CONV(SUBSTRING(MD5({COL}), 1, 16), 16, 10))",
     }
 
     def get_required_params(self) -> List[str]:

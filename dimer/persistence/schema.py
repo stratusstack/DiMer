@@ -56,6 +56,12 @@ def _setup_sqlite(db_url: str) -> None:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.executescript(get_sqlite_ddl())
         conn.commit()
+        # Forward-compatible migration: add metadata column to diff_run if absent
+        try:
+            conn.execute("ALTER TABLE diff_run ADD COLUMN metadata TEXT")
+            conn.commit()
+        except Exception:
+            pass  # column already exists
     finally:
         conn.close()
 

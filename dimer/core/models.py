@@ -34,6 +34,20 @@ class ConnectionMethod(Enum):
     PYARROW_DIRECT = "pyarrow_direct"
 
 
+class DiffAlgorithm(str, Enum):
+    """Algorithm used to compare two tables.
+
+    Inherits from ``str`` so enum members compare equal to their string values
+    and can be passed directly wherever a string is expected (f-strings, DB
+    inserts, JSON serialisation) without calling ``.value``.
+    """
+
+    JOIN_DIFF = "JOIN_DIFF"         # SQL JOIN-based; same-database tables only
+    CROSS_DB_DIFF = "CROSS_DB_DIFF" # full fetch + Python hash; cross-database (legacy)
+    HASH_DIFF = "HASH_DIFF"         # two-phase: narrow key+hash fetch, then targeted row fetch
+    BISECTION = "BISECTION"          # NTILE segment hashing; explicit opt-in
+
+
 class RowStatus(Enum):
     """Status of a single row in a diff result."""
 
@@ -137,6 +151,14 @@ class ComparisonConfig(TypedDict):
     keys: List[str]
 
 
+class BisectionConfig(ComparisonConfig, total=False):
+    """Extends ComparisonConfig with optional bisection parameters."""
+
+    bisection_key: str        # sortable column for NTILE bucketing; defaults to keys[0]
+    bisection_threshold: int  # rows/segment at which to fall back to row-level diff (default: 1000)
+    use_bisection: bool       # explicit opt-in
+
+
 # ---------------------------------------------------------------------------
 # Diff result models  (DiffRow / DiffResult / DiffRun)
 # ---------------------------------------------------------------------------
@@ -208,9 +230,10 @@ class DiffRun:
     schema_differences: Optional[Dict[str, Any]] = None
     # Columns present in both assets that were included in the comparison
     common_columns: Optional[List[str]] = None
-    algorithm: Optional[str] = None   # 'JOIN_DIFF' | 'CROSS_DB_DIFF'
+    algorithm: Optional[DiffAlgorithm] = None
     error: Optional[str] = None
     execution_time_seconds: Optional[float] = None
+    metadata: Optional[Dict[str, Any]] = None  # algorithm-specific stats (bisection: segment_count, depth_reached, etc.)
 
     def added_rows(self) -> List[DiffRow]:
         return [r for r in self.row_diffs if r.status == RowStatus.ADDED]

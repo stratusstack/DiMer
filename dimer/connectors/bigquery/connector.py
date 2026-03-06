@@ -28,6 +28,7 @@ class BigQueryConnector(DataSourceConnector):
         "hash": "MD5(CAST({COL} AS STRING))",
         "concatenation": "||",
         "cast_to_text": "CAST({COL} AS STRING)",
+        "aggregate_hash": "BIT_XOR(FARM_FINGERPRINT({COL}))",
     }
 
     def get_required_params(self) -> List[str]:

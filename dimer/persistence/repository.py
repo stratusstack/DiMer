@@ -274,8 +274,8 @@ def save_diff_run(
     # 1. diff_run
     db.execute(
         "INSERT INTO diff_run "
-        "(run_id, job_id, run_at, status, algorithm, execution_time_seconds, match, error) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "(run_id, job_id, run_at, status, algorithm, execution_time_seconds, match, error, metadata) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             run_id,
             job_id,
@@ -285,6 +285,7 @@ def save_diff_run(
             result.execution_time_seconds,
             1 if result.match else 0,
             result.error,
+            _json(result.metadata),
         ),
     )
 

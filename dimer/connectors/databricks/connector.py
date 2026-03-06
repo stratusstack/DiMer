@@ -28,6 +28,7 @@ class DatabricksConnector(DataSourceConnector):
         "hash": "MD5(CAST({COL} AS STRING))",
         "concatenation": "||",
         "cast_to_text": "CAST({COL} AS STRING)",
+        "aggregate_hash": "BIT_XOR(HASH({COL}))",
     }
 
     def get_required_params(self) -> List[str]:

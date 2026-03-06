@@ -1,81 +1,174 @@
-# DiMer: Difference Modeler for Data Diffs
+# DiMer — Data Diff CLI
 
-DiMer - Difference Modeler is a toolkit for  performing value-level comparisons between two datasets, such as database tables, to identify differences inRows added, removed, or modified. It acts like git diff for data, helping engineers validate data quality during migrations, testing, and monitoring. It allows for comparing data across different environments or databases. 
+DiMer is a universal data diff tool — think `git diff` for database tables. It connects to two data sources, compares their tables row by row, and reports what changed: rows added, deleted, or modified.
 
-It provides comprehensive integration and connectivity module for data diffing applications that supports multiple data sources with intelligent fallback mechanisms.
+It ships as an interactive CLI (`dimer-diff`) and a Python library (`dimer`). It supports Snowflake, PostgreSQL, MySQL, BigQuery, Databricks, CSV, and Parquet out of the box, with automatic connection method fallback, diff history persistence, and three comparison algorithms for tables of any size.
 
-## Features
-
-- **Multiple Connection Strategies**: Each connector supports multiple connection methods with automatic fallback
-- **Unified Type System**: Consistent data type mapping across different data sources
-- **Performance Monitoring**: Built-in metrics collection and performance analysis
-- **Connection Management**: Intelligent connection pooling and lifecycle management
-- **Extensible Architecture**: Easy to add new data source connectors
-- **Production Ready**: Comprehensive error handling, logging, and retry mechanisms
-- **Diff History Persistence**: Automatically saves diff runs to SQLite (default) or PostgreSQL for audit trails and trend analysis
-
-## Supported Data Sources
-
-- **Snowflake**: Arrow, Snowpark, Native, SQLAlchemy, JDBC, ODBC
-- **PostgreSQL**: AsyncPG, Psycopg2, SQLAlchemy
-- **MySQL**: PyMySQL, MySQL Connector, SQLAlchemy
-- **BigQuery**: Storage API, Standard Client
-- **Databricks**: SQL Connector, Databricks Connect
-- **File Sources**: Parquet, CSV
+---
 
 ## Installation
 
-### Basic Installation
-
 ```bash
-pip install dimer
-```
-
-### With Specific Data Source Support
-
-```bash
-# Snowflake support
-pip install dimer[snowflake]
-
-# PostgreSQL support
-pip install dimer[postgresql]
-
-# All data sources
+# Install with all connector extras (recommended)
 pip install dimer[all]
 
-# Development dependencies
-pip install dimer[dev]
+# Or install only what you need
+pip install dimer[snowflake]
+pip install dimer[postgresql]
+pip install dimer[mysql]
+
+# Developers
+pip install -e ".[dev]"
 ```
 
-## Quick Start
+---
 
-### Basic Usage
+## Interactive CLI (quickest path)
+
+```bash
+dimer-diff
+# or
+python -m dimer
+
+# Enable debug logging and full exception tracebacks
+python -m dimer -dev
+```
+
+The CLI walks you through four steps:
+
+1. **Select sources** — choose the data source type for each side
+2. **Verify `.env`** — checks all required credentials, retries until complete
+3. **Establish connections** — connects using the best available driver
+4. **Compare tables** — enter table names, join keys, pick algorithm, run diff
+
+After each diff you are prompted to save the results to the diff history database.
+
+### Example session
+
+```
+── Step 1: Select data sources ────────────────────────────
+  Target 1 source:
+    1.  snowflake
+    2.  postgresql
+    ...
+
+── Step 4: Asset comparison ────────────────────────────────
+  Target 1 (postgresql) — table name
+    > public.orders
+
+  Detecting join keys for Target 1 (public.orders)...
+    ✓  Primary keys detected: id
+    Use these as join keys? [Y/n]:
+
+  Algorithm selection
+  Source row count : 2,450,000
+  ⚠  Large table detected (2,450,000 rows). BISECTION algorithm recommended.
+  Use BISECTION algorithm? [Y/n]:
+  Bisection key column [id]:
+  Threshold rows/segment [1000]:
+
+  ──────────────────────────────────────────────────────
+  Source  : postgresql           public.orders
+  Target  : snowflake            PUBLIC.ORDERS
+  Keys    : id  ←→  id
+  Algorithm: BISECTION  (key=id, threshold=1000)
+  ──────────────────────────────────────────────────────
+
+  Run diff? [Y/n]:
+  Running comparison...
+
+  ──────────────────────────────────────────────────────
+  ✗  MISMATCH  — tables differ
+  Algorithm      : BISECTION
+  Elapsed        : 3.41s
+  Segments       : 16 initial, 2 differing
+  Depth          : 1
+  Source rows    : 2,450,000
+  Target rows    : 2,450,001
+  Added          : 1  (in target, not in source)
+  Modified       : 3  (values differ)
+  Matched        : 2,449,996
+  ──────────────────────────────────────────────────────
+
+  Save results? [Y/n]:
+```
+
+---
+
+## Diff Algorithms
+
+DiMer selects the algorithm automatically based on the data sources involved. One algorithm requires explicit opt-in.
+
+| Algorithm | When used | How |
+|---|---|---|
+| `JOIN_DIFF` | Same database instance | SQL JOINs only — no data leaves the DB |
+| `HASH_DIFF` | Different DB instances (default) | Narrow key+hash fetch, then targeted row fetch |
+| `BISECTION` | Explicit opt-in (large tables) | NTILE segment hashing — fetches only differing buckets |
+| `CROSS_DB_DIFF` | Legacy / direct call only | Full table fetch into Python |
+
+**BISECTION** is auto-suggested by the CLI when the source table exceeds 1 million rows. To activate it in code, set `use_bisection=True` in the config:
 
 ```python
-from dimer.core.models import ConnectionConfig
-from dimer.core.factory import ConnectorFactory
+from dimer.core.models import BisectionConfig
 
-# Create connection configuration
+db1: BisectionConfig = {
+    "fq_table_name": "public.orders",
+    "keys": ["id"],
+    "use_bisection": True,
+    "bisection_key": "id",       # sortable key for NTILE (defaults to keys[0])
+    "bisection_threshold": 1000, # rows/segment before a warning is issued (default: 1000)
+}
+```
+
+For a full explanation of each algorithm — including step-by-step SQL, data transfer analysis, and when to use each one — see **[ALGO.md](ALGO.md)**.
+
+---
+
+## Python API
+
+### Connecting to a data source
+
+```python
+from dimer.core.factory import ConnectorFactory
+from dimer.core.models import ConnectionConfig
+
 config = ConnectionConfig(
-    # different configuration parameters go here like host
+    host="localhost",
+    port=5432,
+    username="user",
+    password="password",
+    database="mydb",
+    schema_name="public",
 )
 
-# Create connector
-connector = ConnectorFactory.create_connector('<database name>', config)
+connector = ConnectorFactory.create_connector("postgresql", config)
+connector.connect()  # tries AsyncPG → psycopg2 → SQLAlchemy automatically
 
-# Connect with automatic fallback
-connector.connect()
+metadata = connector.get_table_metadata("orders")
+print(f"{len(metadata.columns)} columns, {metadata.row_count} rows")
 
-# Get table metadata
-metadata = connector.get_table_metadata('my_table')
-print(f"Table has {len(metadata.columns)} columns")
-
-# Sample data
-sample_data = connector.get_sample_data('my_table', limit=10)
-print(sample_data.head())
-
-# Clean up
 connector.close()
+```
+
+### Comparing two tables
+
+```python
+from dimer.core.compare import Diffcheck
+from dimer.core.models import ComparisonConfig
+
+db1: ComparisonConfig = {"fq_table_name": "public.orders", "keys": ["id"]}
+db2: ComparisonConfig = {"fq_table_name": "PUBLIC.ORDERS", "keys": ["ID"]}
+
+result = Diffcheck(connector1, connector2, db1, db2).compare()
+
+print(f"Match: {result.match}")
+print(f"Algorithm: {result.algorithm}")
+print(f"Added: {result.summary.added_count}")
+print(f"Deleted: {result.summary.deleted_count}")
+print(f"Modified: {result.summary.modified_count}")
+
+for row in result.modified_rows():
+    print(row.key_values, row.mismatched_columns)
 ```
 
 ### Connection Manager
@@ -85,257 +178,143 @@ from dimer.core.manager import ConnectionManager
 
 manager = ConnectionManager()
 
-# Create managed connection
 connector = manager.create_connection(
-    connection_id='<connection name>',
-    source_type='<database name>',
-    connection_config=config
+    connection_id="prod-postgres",
+    source_type="postgresql",
+    connection_config=config,
 )
 
-# List all connections
-connections = manager.list_connections()
+if manager.test_connection("prod-postgres"):
+    conn = manager.get_connection("prod-postgres")
 
-# Test connection
-if manager.test_connection('<connection name>'):
-    print("Connection is healthy")
-
-# Get connection for use
-conn = manager.get_connection('<connection name>')
-
-# Clean up all connections
 manager.close_all()
 ```
 
-### Performance Monitoring
+---
 
-```python
-from dimer.metrics.collector import get_metrics_collector
+## Supported Data Sources
 
-# Get global metrics collector
-collector = get_metrics_collector()
+| Source | Aliases | Connection methods (in preference order) |
+|--------|---------|------------------------------------------|
+| Snowflake | — | Arrow → Native → SQLAlchemy |
+| PostgreSQL | `postgres` | AsyncPG → psycopg2 → SQLAlchemy |
+| MySQL | — | mysql-connector → PyMySQL → SQLAlchemy |
+| BigQuery | `bq` | BigQuery Storage API → Native → SQLAlchemy |
+| Databricks | — | Databricks Connect → Native → SQLAlchemy |
+| CSV | — | pandas |
+| Parquet | — | PyArrow → pandas |
 
-# Connection statistics
-stats = collector.get_connection_statistics()
-for source_method, performance in stats.items():
-    print(f"{source_method}: {performance.success_rate:.1%} success rate")
+---
 
-# Method comparison for a specific source
-comparison = collector.get_method_comparison('<database name>')
-for method, data in comparison.items():
-    print(f"{method}: avg {data['performance_stats'].avg_duration:.2f}s")
-```
+## Environment Variables
 
-## Architecture
-
-### Core Components
-
-- **DataSourceConnector**: Abstract base class for all connectors
-- **ConnectorFactory**: Factory pattern for creating connectors
-- **ConnectionManager**: Connection lifecycle and pooling management
-- **DataTypeMapper**: Unified type system across data sources
-- **MetricsCollector**: Performance monitoring and analytics
-
-### Connection Strategies
-
-Each connector implements multiple connection methods in order of preference:
-
-1. **Optimized Methods**: Native high-performance drivers (Arrow, AsyncPG)
-2. **Standard Methods**: Common database adapters (psycopg2, native connectors)
-3. **Fallback Methods**: Universal adapters (JDBC, ODBC)
-
-### Type System
-
-All data types are mapped to a common type system:
-
-- `string`, `text` - Text data
-- `int8`, `int16`, `int32`, `int64` - Integer types
-- `float32`, `float64` - Floating point
-- `decimal` - High precision numbers
-- `boolean` - Boolean values
-- `date`, `datetime`, `timestamp` - Date/time types
-- `json`, `array`, `object` - Complex types
-
-## Configuration
-
-### Connection Configuration
-
-```python
-from dimer.core.models import ConnectionConfig
-
-config = ConnectionConfig(
-    host='localhost',
-    port=5432,
-    username='user',
-    password='password',
-    database='mydb',
-    schema_name='public',
-
-    # Connection pool settings
-    pool_size=5,
-    max_overflow=10,
-    pool_timeout=30,
-
-    # Retry settings
-    max_retries=3,
-    retry_delay=1.0,
-    backoff_factor=2.0,
-
-    # Timeout settings
-    connect_timeout=30,
-    query_timeout=300,
-
-    # Source-specific parameters
-    extra_params={
-        'ssl_mode': 'require',
-        'application_name': 'dimer'
-    }
-)
-```
-
-### Environment Variables
+Create a `.env` file (see `.env.example`):
 
 ```bash
-# Snowflake
-export SNOWFLAKE_ACCOUNT=your-account
-export SNOWFLAKE_USER=username
-export SNOWFLAKE_PASSWORD=password
-export SNOWFLAKE_DATABASE=DATABASE
-export SNOWFLAKE_WAREHOUSE=WAREHOUSE
-export SNOWFLAKE_ROLE=ROLE
-
 # PostgreSQL
-export POSTGRES_HOST=localhost
-export POSTGRES_PORT=5432
-export POSTGRES_USER=postgres
-export POSTGRES_PASSWORD=password
-export POSTGRES_DATABASE=postgres
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=secret
+POSTGRES_DATABASE=mydb
 
-# Persistence (optional — defaults to ~/.dimer/dimer.db)
-export DIMER_DB_URL=sqlite:///~/.dimer/dimer.db       # default
-# export DIMER_DB_URL=postgresql://user:pass@host/dimer  # production
+# Snowflake
+SNOWFLAKE_ACCOUNT=myorg-myaccount
+SNOWFLAKE_USER=myuser
+SNOWFLAKE_PASSWORD=secret
+SNOWFLAKE_DATABASE=MYDB
+SNOWFLAKE_WAREHOUSE=COMPUTE_WH
+SNOWFLAKE_ROLE=ACCOUNTADMIN
+
+# MySQL
+MYSQL_HOST=localhost
+MYSQL_USER=root
+MYSQL_PASSWORD=secret
+MYSQL_DATABASE=mydb
+
+# BigQuery
+BIGQUERY_PROJECT_ID=my-gcp-project
+BIGQUERY_DATASET=my_dataset
+BIGQUERY_CREDENTIALS_PATH=/path/to/key.json
+
+# Databricks
+DATABRICKS_HOST=https://adb-xxx.azuredatabricks.net
+DATABRICKS_TOKEN=dapi...
+DATABRICKS_HTTP_PATH=/sql/1.0/warehouses/xxx
+
+# Diff history persistence (optional — defaults to ~/.dimer/dimer.db)
+DIMER_DB_URL=sqlite:///~/.dimer/dimer.db
+# DIMER_DB_URL=postgresql://user:pass@host/dimer
 ```
 
-## Interactive CLI
-
-Run the interactive data diff CLI:
-
-```bash
-dimer-diff
-# or
-python -m dimer
-
-# Enable debug logging and full tracebacks
-python -m dimer -dev
-```
-
-The CLI guides you through four steps:
-
-1. **Select sources** — choose data source type for each side (Snowflake, PostgreSQL, MySQL, BigQuery, Databricks)
-2. **Verify `.env`** — checks that all required credentials are set, with a retry loop if any are missing
-3. **Establish connections** — connects using the best available driver with automatic fallback
-4. **Compare tables** — specify fully-qualified table names and join keys, run the diff, and view results
-
-After each diff you are prompted to **save the results**. DiMer persists diff runs to SQLite by default (`~/.dimer/dimer.db`) — no configuration needed. You can optionally also save original/modified row values for full audit trails.
+---
 
 ## Diff History Persistence
 
-DiMer automatically stores diff history so you can track data quality over time.
+DiMer automatically stores diff history for audit trails and trend analysis.
 
-**Storage backends:**
-
-| Backend | URL format | Use case |
-|---------|-----------|----------|
-| SQLite (default) | `sqlite:///~/.dimer/dimer.db` | Local / development |
+| Backend | URL format | When to use |
+|---------|-----------|-------------|
+| SQLite (default) | `sqlite:///~/.dimer/dimer.db` | Local / single-user |
 | PostgreSQL | `postgresql://user:pass@host/dimer` | Team / production |
 
-Set `DIMER_DB_URL` to switch backends. If unset, SQLite at `~/.dimer/dimer.db` is used automatically.
+Set `DIMER_DB_URL` to switch. If unset, SQLite at `~/.dimer/dimer.db` is used automatically (the directory is created if it does not exist).
 
-**What gets saved:**
+**What gets saved per run:**
 
-- `diff_run` — timestamp, algorithm, execution time, match/mismatch result
-- `diff_result` — aggregate row counts: added, deleted, modified, matched
-- `diff_row` — individual differing rows (up to 100 per run) including key values and mismatched columns
-- `diff_job` — the pair of tables being compared (source + target + key columns)
-- `project_source` — connection metadata (host, port, database — no credentials stored)
+| Table | Contents |
+|-------|----------|
+| `diff_run` | timestamp, algorithm, elapsed time, match result, algorithm metadata (e.g. bisection segment stats) |
+| `diff_result` | aggregate counts: added, deleted, modified, matched |
+| `diff_row` | up to 100 individual differing rows with key values and mismatched columns |
+| `diff_job` | the table pair + key columns (reused across runs) |
+| `project_source` | connection host/port/database — credentials are never stored |
 
-**Retention:** after saving, DiMer optionally cleans up old runs for the same job, keeping only the N most recent.
+**Retention:** after saving, DiMer optionally prunes old runs, keeping only the N most recent for each job.
 
-## Error Handling
-
-DiMer provides comprehensive error handling with automatic fallback:
-
-```python
-try:
-    connector = ConnectorFactory.create_connector('snowflake', config)
-    connector.connect()  # Tries multiple methods automatically
-except ConnectionError as e:
-    print(f"All connection methods failed: {e}")
-
-# Check which methods were attempted
-metrics = connector.get_connection_metrics()
-for attempt in metrics:
-    print(f"{attempt['method']}: {'✓' if attempt['success'] else '✗'}")
-```
+---
 
 ## Testing
 
-Run the test suite:
-
 ```bash
-# Run all tests
+# All tests
 pytest
 
-# Run with coverage
-pytest --cov=dimer
-
-# Run specific test categories
+# By category
 pytest -m unit
 pytest -m integration
-pytest -m slow
+
+# With coverage
+pytest --cov=dimer --cov-report=term-missing
+
+# Single connector integration tests (requires real credentials in .env)
+pytest tests/test_postgres_integration.py -v -s
 ```
 
-## Performance
-
-### Connection Method Performance (typical)
-
-| Data Source | Method | Avg Connect Time | Query Performance | Use Case |
-|-------------|--------|------------------|-------------------|----------|
-| Snowflake | Arrow | 1.2s | Excellent | Large datasets |
-| Snowflake | Snowpark | 1.5s | Very Good | DataFrame ops |
-| Snowflake | Native | 2.0s | Good | General use |
-| PostgreSQL | AsyncPG | 0.1s | Excellent | High concurrency |
-| PostgreSQL | Psycopg2 | 0.2s | Very Good | General use |
-
-### Best Practices
-
-- Use connection pooling for multiple queries
-- Enable Arrow format for large Snowflake queries
-- Use AsyncPG for high-concurrency PostgreSQL workloads
-- Monitor connection metrics to optimize performance
-- Set appropriate timeouts based on your use case
+---
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/new-connector`)
-3. Make changes and add tests
-4. Run tests (`pytest`)
-5. Submit a pull request
+### Adding a new connector
 
-### Adding New Connectors
+1. Create a directory under `dimer/connectors/<source>/`
+2. Subclass `DataSourceConnector` from `dimer.core.base`
+3. Implement `get_required_params()`, `get_connection_methods()`, and a `_connect_<method>()` for each
+4. Define `DIALECTS` with five keys: `hash`, `concatenation`, `cast_to_text`, `aggregate_hash` (required for bisection), and optionally `IDENTIFIER_CASE`
+5. Register in `dimer/connectors/<source>/__init__.py` and in `_auto_register_connectors()` in `factory.py`
+6. Add unit and integration tests
 
-1. Create connector class inheriting from `DataSourceConnector`
-2. Implement required abstract methods
-3. Add connection methods in order of preference
-4. Register with factory in `__init__.py`
-5. Add comprehensive tests
+### Running linters
+
+```bash
+black .
+isort .
+flake8
+mypy dimer/
+```
+
+---
 
 ## License
 
-MIT License - see LICENSE file for details.
-
-## Support
-
-- **Documentation**: [docs.dimer.io](https://docs.dimer.io)
-- **Issues**: [GitHub Issues](https://github.com/dimer/dimer/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/dimer/dimer/discussions)
+MIT License — see `LICENSE` for details.

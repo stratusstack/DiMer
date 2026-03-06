@@ -9,9 +9,9 @@ from typing import Dict, List, Optional, Tuple
 import structlog
 from dotenv import load_dotenv
 
-from dimer.core.compare import Diffcheck
+from dimer.core.compare import Diffcheck, BISECTION_DEFAULT_THRESHOLD
 from dimer.core.factory import ConnectorFactory
-from dimer.core.models import ComparisonConfig, DiffRun, ConnectionConfig
+from dimer.core.models import ComparisonConfig, DiffAlgorithm, DiffRun, ConnectionConfig
 
 # ---------------------------------------------------------------------------
 # Logging configuration
@@ -356,6 +356,78 @@ def detect_or_prompt_keys(connector, fq_table: str, label: str) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
+# Bisection prompt
+# ---------------------------------------------------------------------------
+
+
+def prompt_bisection(
+    connector1,
+    connector2,
+    fq1: str,
+    fq2: str,
+    keys1: List[str],
+) -> "Tuple[bool, Optional[str], int]":
+    """Prompt the user about whether to use the BISECTION algorithm.
+
+    Does a best-effort COUNT(*) on the source table; auto-suggests bisection
+    when the table exceeds 1 million rows.
+
+    Returns:
+        (use_bisection, bisection_key_override, threshold)
+    """
+    ROW_SUGGEST_THRESHOLD = 1_000_000
+
+    print(f"\n  {_bold('Algorithm selection')}")
+
+    # Try to estimate row count on source
+    row_count: Optional[int] = None
+    try:
+        from dimer.core.compare import _validate_identifier
+        case = getattr(connector1, "IDENTIFIER_CASE", "preserve")
+        safe_table = _validate_identifier(fq1, case)
+        result = connector1.execute_query(f"SELECT COUNT(*) AS row_count FROM {safe_table}")
+        df = result.data
+        if df is not None and len(df) > 0:
+            row_count = int(df.iloc[0, 0])
+            print(f"  Source row count : {row_count:,}")
+    except Exception:
+        pass  # non-fatal; proceed without count
+
+    auto_suggest = row_count is not None and row_count > ROW_SUGGEST_THRESHOLD
+    if auto_suggest:
+        print(
+            f"  {_yellow('⚠')}  Large table detected ({row_count:,} rows). "
+            f"BISECTION algorithm recommended."
+        )
+
+    prompt = "  Use BISECTION algorithm? [y/N]: " if not auto_suggest else "  Use BISECTION algorithm? [Y/n]: "
+    ans = input(prompt).strip().lower()
+
+    if auto_suggest:
+        use_bisection = ans not in ("n", "no")
+    else:
+        use_bisection = ans in ("y", "yes")
+
+    if not use_bisection:
+        return False, None, BISECTION_DEFAULT_THRESHOLD
+
+    # Optional bisection key override
+    default_key = keys1[0] if keys1 else ""
+    raw_key = input(
+        f"  Bisection key column [{_dim(default_key)}]: "
+    ).strip()
+    bisection_key: Optional[str] = raw_key if raw_key else None
+
+    # Optional threshold override
+    raw_threshold = input(
+        f"  Threshold rows/segment [{_dim(str(BISECTION_DEFAULT_THRESHOLD))}]: "
+    ).strip()
+    threshold = int(raw_threshold) if raw_threshold.isdigit() and int(raw_threshold) > 0 else BISECTION_DEFAULT_THRESHOLD
+
+    return True, bisection_key, threshold
+
+
+# ---------------------------------------------------------------------------
 # Result display
 # ---------------------------------------------------------------------------
 
@@ -376,6 +448,10 @@ def display_result(result: DiffRun) -> None:
         print(f"  Algorithm      : {result.algorithm}")
     if result.execution_time_seconds is not None:
         print(f"  Elapsed        : {result.execution_time_seconds:.2f}s")
+    if result.algorithm == DiffAlgorithm.BISECTION and result.metadata:
+        m = result.metadata
+        print(f"  Segments       : {m.get('segment_count', '?')} initial, {m.get('segments_differing', '?')} differing")
+        print(f"  Depth          : {m.get('depth_reached', '?')}")
 
     # Row count summary
     s = result.summary
@@ -616,12 +692,19 @@ def main() -> None:
             keys1 = detect_or_prompt_keys(connector1, fq1, "Target 1")
             keys2 = detect_or_prompt_keys(connector2, fq2, "Target 2")
 
+            use_bisection, bisection_key, bisection_threshold = prompt_bisection(
+                connector1, connector2, fq1, fq2, keys1
+            )
+
             # Confirmation summary
             print()
             print("  " + "─" * 54)
             print(f"  Source  : {_cyan(src1):<20} {_bold(fq1)}")
             print(f"  Target  : {_cyan(src2):<20} {_bold(fq2)}")
             print(f"  Keys    : {', '.join(keys1)}  ←→  {', '.join(keys2)}")
+            if use_bisection:
+                bkey_display = bisection_key or keys1[0]
+                print(f"  Algorithm: BISECTION  (key={bkey_display}, threshold={bisection_threshold})")
             print("  " + "─" * 54)
 
             ans = input("\n  Run diff? [Y/n]: ").strip().lower()
@@ -632,6 +715,11 @@ def main() -> None:
                 try:
                     db1: ComparisonConfig = {"fq_table_name": fq1, "keys": keys1}
                     db2: ComparisonConfig = {"fq_table_name": fq2, "keys": keys2}
+                    if use_bisection:
+                        db1["use_bisection"] = True  # type: ignore[typeddict-unknown-key]
+                        db1["bisection_threshold"] = bisection_threshold  # type: ignore[typeddict-unknown-key]
+                        if bisection_key:
+                            db1["bisection_key"] = bisection_key  # type: ignore[typeddict-unknown-key]
                     result: DiffRun = Diffcheck(connector1, connector2, db1, db2).compare()
                     display_result(result)
 
