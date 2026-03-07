@@ -46,6 +46,7 @@ class DiffAlgorithm(str, Enum):
     CROSS_DB_DIFF = "CROSS_DB_DIFF" # full fetch + Python hash; cross-database (legacy)
     HASH_DIFF = "HASH_DIFF"         # two-phase: narrow key+hash fetch, then targeted row fetch
     BISECTION = "BISECTION"          # NTILE segment hashing; explicit opt-in
+    SAMPLED = "SAMPLED"             # statistical sampling; cross-database only; explicit opt-in
 
 
 class RowStatus(Enum):
@@ -157,6 +158,19 @@ class BisectionConfig(ComparisonConfig, total=False):
     bisection_key: str        # sortable column for NTILE bucketing; defaults to keys[0]
     bisection_threshold: int  # rows/segment at which to fall back to row-level diff (default: 1000)
     use_bisection: bool       # explicit opt-in
+
+
+class SamplingConfig(ComparisonConfig, total=False):
+    """Extends ComparisonConfig with optional sampling parameters.
+
+    Sampling is source-perspective: rows are sampled from the source table,
+    matched by key in the target, and classified as DELETED or MODIFIED.
+    ADDED rows (present in target but not in the source sample) are not detected.
+    """
+
+    sample_size: int    # number of rows to sample from source (default: 10_000)
+    confidence: float   # Wilson CI confidence level — 0.90, 0.95, or 0.99 (default: 0.95)
+    use_sampling: bool  # explicit opt-in flag
 
 
 # ---------------------------------------------------------------------------

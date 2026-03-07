@@ -2,7 +2,7 @@
 
 DiMer is a universal data diff tool — think `git diff` for database tables. It connects to two data sources, compares their tables row by row, and reports what changed: rows added, deleted, or modified.
 
-It ships as an interactive CLI (`dimer-diff`) and a Python library (`dimer`). It supports Snowflake, PostgreSQL, MySQL, BigQuery, Databricks, CSV, and Parquet out of the box, with automatic connection method fallback, diff history persistence, and three comparison algorithms for tables of any size.
+It ships as an interactive CLI (`dimer-diff`) and a Python library (`dimer`). It supports Snowflake, PostgreSQL, MySQL, BigQuery, Databricks, CSV, and Parquet out of the box, with automatic connection method fallback, diff history persistence, and four comparison algorithms for tables of any size.
 
 ---
 
@@ -104,6 +104,7 @@ DiMer selects the algorithm automatically based on the data sources involved. On
 | `JOIN_DIFF` | Same database instance | SQL JOINs only — no data leaves the DB |
 | `HASH_DIFF` | Different DB instances (default) | Narrow key+hash fetch, then targeted row fetch |
 | `BISECTION` | Explicit opt-in (large tables) | NTILE segment hashing — fetches only differing buckets |
+| `SAMPLED` | Explicit opt-in (very large tables, cross-DB only) | Statistical sample — estimates diff rate with confidence interval |
 | `CROSS_DB_DIFF` | Legacy / direct call only | Full table fetch into Python |
 
 **BISECTION** is auto-suggested by the CLI when the source table exceeds 1 million rows. To activate it in code, set `use_bisection=True` in the config:
@@ -121,6 +122,87 @@ db1: BisectionConfig = {
 ```
 
 For a full explanation of each algorithm — including step-by-step SQL, data transfer analysis, and when to use each one — see **[ALGO.md](ALGO.md)**.
+
+---
+
+## Sampled Diff (Statistical Mode)
+
+For extremely large cross-database tables where even BISECTION is slow, DiMer can run a statistical sample instead of a full diff. It samples a subset of rows from the **source** table, fetches the matching rows from the **target** by primary key, and computes a diff rate with a Wilson score confidence interval.
+
+### How it works
+
+1. `COUNT(*)` the full source table (for extrapolation).
+2. Sample `sample_size` rows from source via `ORDER BY RANDOM() LIMIT n`.
+3. Fetch matching rows from target using `WHERE key IN (sampled_keys)`.
+4. Classify sampled rows as DELETED (key missing in target) or MODIFIED (values differ).
+5. Compute the Wilson score 95% CI for the observed diff rate `k / n`.
+6. Extrapolate: `estimated_total_diffs ≈ diff_rate × full_source_row_count`.
+
+### Choosing a sample size
+
+The margin of error depends only on `sample_size`, not on total table size:
+
+| Target margin of error | Sample size needed (95% CI) |
+|---|---|
+| ±5% | 385 rows |
+| ±2% | 2,401 rows |
+| ±1% | 9,604 rows |
+| ±0.5% | 38,416 rows |
+
+### CLI usage
+
+The CLI automatically offers sampling when the diff is cross-database and BISECTION was not selected:
+
+```
+  Sampling (statistical alternative to full table fetch)
+  Samples source rows → fetches matching rows in target → estimates diff rate.
+  ⚠  ADDED rows in target are not detected (source-perspective only).
+  Use SAMPLED algorithm? [y/N]: y
+  Guidance — rows needed for target margin of error at 95% confidence:
+    ±5% → 385   ±2% → 2,401   ±1% → 9,604   ±0.5% → 38,416
+  Sample size [10000]: 9604
+  Confidence level (0.90 / 0.95 / 0.99) [0.95]:
+
+  ──────────────────────────────────────────────────────
+  ✗  MISMATCH  — tables differ
+  Algorithm      : SAMPLED
+  Elapsed        : 1.23s
+  Sample size    : 9,604 of 50,000,000 source rows
+  Observed diff  : 0.52% in sample
+  95% CI         : [0.39%, 0.65%]
+  Margin of error: ±0.13%
+  Est. total diffs: ~260,000 rows (extrapolated)
+  ⚠  ADDED rows in target are not detected (source-perspective only)
+  ──────────────────────────────────────────────────────
+```
+
+### Python API
+
+```python
+from dimer.core.models import SamplingConfig
+
+db1: SamplingConfig = {
+    "fq_table_name": "public.orders",
+    "keys": ["id"],
+    "use_sampling": True,
+    "sample_size": 9604,   # rows to sample (default: 10_000)
+    "confidence": 0.95,    # CI confidence level: 0.90, 0.95, or 0.99 (default: 0.95)
+}
+db2: SamplingConfig = {"fq_table_name": "PUBLIC.ORDERS", "keys": ["ID"]}
+
+result = Diffcheck(connector1, connector2, db1, db2).compare()
+
+m = result.metadata
+print(f"Observed diff rate : {m['estimated_diff_pct']:.2f}%")
+print(f"95% CI             : [{m['ci_lower']:.2f}%, {m['ci_upper']:.2f}%]")
+print(f"Est. total diffs   : ~{m['estimated_total_diffs']:,} rows")
+```
+
+### Limitation — ADDED rows not detected
+
+Because rows are sampled from the **source**, any rows that exist only in the **target** (ADDED) are never seen by the algorithm. The diff rate and confidence interval reflect **source-perspective differences only** (DELETED + MODIFIED). If you need to detect added rows as well, use HASH_DIFF or BISECTION instead.
+
+This is an inherent property of the source-perspective sampling approach (Option B1). A future bidirectional sampling mode (Option B2) would address this at the cost of two sample fetches per run.
 
 ---
 

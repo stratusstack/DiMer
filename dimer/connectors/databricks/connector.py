@@ -29,6 +29,7 @@ class DatabricksConnector(DataSourceConnector):
         "concatenation": "||",
         "cast_to_text": "CAST({COL} AS STRING)",
         "aggregate_hash": "BIT_XOR(HASH({COL}))",
+        "random_func": "RAND()",
     }
 
     def get_required_params(self) -> List[str]:

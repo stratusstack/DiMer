@@ -30,6 +30,7 @@ class PostgreSQLConnector(DataSourceConnector):
         "concatenation": "||",
         "cast_to_text": "CAST({COL} AS TEXT)",
         "aggregate_hash": "BIT_XOR(CONV(SUBSTRING(MD5({COL}), 1, 16), 16, 10))",
+        "random_func": "RANDOM()",
     }
 
     def get_required_params(self) -> List[str]:

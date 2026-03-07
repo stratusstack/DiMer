@@ -29,6 +29,7 @@ class MySQLConnector(DataSourceConnector):
         "concatenation": ", ",
         "cast_to_text": "CAST({COL} AS CHAR)",
         "aggregate_hash": "BIT_XOR(CONV(SUBSTRING(MD5(CONCAT({COL})), 1, 16), 16, 10))",
+        "random_func": "RAND()",
     }
 
     def get_required_params(self) -> List[str]:

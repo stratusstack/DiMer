@@ -29,6 +29,7 @@ class BigQueryConnector(DataSourceConnector):
         "concatenation": "||",
         "cast_to_text": "CAST({COL} AS STRING)",
         "aggregate_hash": "BIT_XOR(FARM_FINGERPRINT({COL}))",
+        "random_func": "RAND()",
     }
 
     def get_required_params(self) -> List[str]:

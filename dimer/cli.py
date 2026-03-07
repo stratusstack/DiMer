@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Tuple
 import structlog
 from dotenv import load_dotenv
 
-from dimer.core.compare import Diffcheck, BISECTION_DEFAULT_THRESHOLD
+from dimer.core.compare import Diffcheck, BISECTION_DEFAULT_THRESHOLD, SAMPLED_DEFAULT_SIZE, SAMPLED_DEFAULT_CONFIDENCE
 from dimer.core.factory import ConnectorFactory
 from dimer.core.models import ComparisonConfig, DiffAlgorithm, DiffRun, ConnectionConfig
 
@@ -427,6 +427,41 @@ def prompt_bisection(
     return True, bisection_key, threshold
 
 
+def prompt_sampling() -> "Tuple[bool, int, float]":
+    """Prompt the user about whether to use the SAMPLED algorithm.
+
+    Only offered for cross-database comparisons.
+
+    Returns:
+        (use_sampling, sample_size, confidence)
+    """
+    print(f"\n  {_bold('Sampling')} {_dim('(statistical alternative to full table fetch)')}")
+    print(f"  {_dim('Samples source rows → fetches matching rows in target → estimates diff rate.')}")
+    print(f"  {_yellow('⚠')}  {_dim('ADDED rows in target are not detected (source-perspective only).')}")
+
+    ans = input("  Use SAMPLED algorithm? [y/N]: ").strip().lower()
+    if ans not in ("y", "yes"):
+        return False, SAMPLED_DEFAULT_SIZE, SAMPLED_DEFAULT_CONFIDENCE
+
+    # Sample size
+    print(f"  {_dim('Guidance — rows needed for target margin of error at 95% confidence:')}")
+    print(f"  {_dim('  ±5% → 385   ±2% → 2,401   ±1% → 9,604   ±0.5% → 38,416')}")
+    raw_n = input(f"  Sample size [{_dim(str(SAMPLED_DEFAULT_SIZE))}]: ").strip()
+    sample_size = int(raw_n) if raw_n.isdigit() and int(raw_n) > 0 else SAMPLED_DEFAULT_SIZE
+
+    # Confidence level
+    raw_conf = input(f"  Confidence level (0.90 / 0.95 / 0.99) [{_dim('0.95')}]: ").strip()
+    try:
+        conf = float(raw_conf) if raw_conf else SAMPLED_DEFAULT_CONFIDENCE
+        if conf not in (0.90, 0.95, 0.99):
+            print(f"  {_yellow('⚠')}  Unrecognised confidence level; defaulting to 0.95.")
+            conf = SAMPLED_DEFAULT_CONFIDENCE
+    except ValueError:
+        conf = SAMPLED_DEFAULT_CONFIDENCE
+
+    return True, sample_size, conf
+
+
 # ---------------------------------------------------------------------------
 # Result display
 # ---------------------------------------------------------------------------
@@ -452,6 +487,21 @@ def display_result(result: DiffRun) -> None:
         m = result.metadata
         print(f"  Segments       : {m.get('segment_count', '?')} initial, {m.get('segments_differing', '?')} differing")
         print(f"  Depth          : {m.get('depth_reached', '?')}")
+
+    if result.algorithm == DiffAlgorithm.SAMPLED and result.metadata:
+        m = result.metadata
+        n = m.get('sample_size', 0)
+        full = m.get('source_row_count_full', 0)
+        conf_pct = int(m.get('confidence_level', 0.95) * 100)
+        n_str = f"{n:,}" if isinstance(n, int) else str(n)
+        full_str = f"{full:,}" if isinstance(full, int) else str(full)
+        print(f"  Sample size    : {n_str} of {full_str} source rows")
+        print(f"  Observed diff  : {m.get('estimated_diff_pct', 0):.2f}% in sample")
+        print(f"  {conf_pct}% CI          : [{m.get('ci_lower', 0):.2f}%, {m.get('ci_upper', 0):.2f}%]")
+        print(f"  Margin of error: ±{m.get('margin_of_error', 0):.2f}%")
+        est = m.get('estimated_total_diffs', 0)
+        print(f"  Est. total diffs: ~{est:,} rows (extrapolated)")
+        print(f"  {_yellow('⚠')}  ADDED rows in target are not detected (source-perspective only)")
 
     # Row count summary
     s = result.summary
@@ -696,6 +746,18 @@ def main() -> None:
                 connector1, connector2, fq1, fq2, keys1
             )
 
+            use_sampling = False
+            sample_size_val = SAMPLED_DEFAULT_SIZE
+            sample_confidence = SAMPLED_DEFAULT_CONFIDENCE
+            if not use_bisection:
+                # Sampling is only meaningful for cross-database comparisons
+                same_instance = (
+                    connector1.connection_config.host == connector2.connection_config.host
+                    and connector1.connection_config.database == connector2.connection_config.database
+                )
+                if not same_instance:
+                    use_sampling, sample_size_val, sample_confidence = prompt_sampling()
+
             # Confirmation summary
             print()
             print("  " + "─" * 54)
@@ -705,6 +767,8 @@ def main() -> None:
             if use_bisection:
                 bkey_display = bisection_key or keys1[0]
                 print(f"  Algorithm: BISECTION  (key={bkey_display}, threshold={bisection_threshold})")
+            elif use_sampling:
+                print(f"  Algorithm: SAMPLED  (n={sample_size_val:,}, confidence={sample_confidence})")
             print("  " + "─" * 54)
 
             ans = input("\n  Run diff? [Y/n]: ").strip().lower()
@@ -720,6 +784,10 @@ def main() -> None:
                         db1["bisection_threshold"] = bisection_threshold  # type: ignore[typeddict-unknown-key]
                         if bisection_key:
                             db1["bisection_key"] = bisection_key  # type: ignore[typeddict-unknown-key]
+                    elif use_sampling:
+                        db1["use_sampling"] = True  # type: ignore[typeddict-unknown-key]
+                        db1["sample_size"] = sample_size_val  # type: ignore[typeddict-unknown-key]
+                        db1["confidence"] = sample_confidence  # type: ignore[typeddict-unknown-key]
                     result: DiffRun = Diffcheck(connector1, connector2, db1, db2).compare()
                     display_result(result)
 

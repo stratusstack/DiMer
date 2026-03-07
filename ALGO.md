@@ -1,6 +1,6 @@
 # DiMer Diff Algorithms
 
-DiMer implements four diff algorithms. Three are selected automatically based on context; one requires explicit opt-in.
+DiMer implements five diff algorithms. Three are selected automatically based on context; two require explicit opt-in.
 
 | Algorithm | Selected when | Key characteristic |
 |---|---|---|
@@ -8,13 +8,15 @@ DiMer implements four diff algorithms. Three are selected automatically based on
 | `HASH_DIFF` | Tables on different DB instances (default) | Narrow Phase 1 fetch; targeted Phase 2 |
 | `CROSS_DB_DIFF` | Legacy / explicit fallback | Full table fetch into Python |
 | `BISECTION` | Explicit opt-in | NTILE segment hashing; best for large tables |
+| `SAMPLED` | Explicit opt-in; cross-DB only | Statistical sample — estimates diff rate with Wilson CI |
 
 The selection logic in `compare()`:
 
 ```
-use_bisection flag set?  →  BISECTION
-same host + database?    →  JOIN_DIFF
-otherwise               →  HASH_DIFF
+use_bisection flag set?   →  BISECTION
+use_sampling flag set?    →  SAMPLED  (cross-DB only; falls back to JOIN_DIFF if same-instance)
+same host + database?     →  JOIN_DIFF
+otherwise                →  HASH_DIFF
 ```
 
 `CROSS_DB_DIFF` is not selected automatically — it is available by calling `compare_cross_database()` directly.
@@ -335,6 +337,160 @@ The NTILE partitioning is based on row ordering, not key ranges. If the two tabl
 
 ---
 
+## SAMPLED
+
+**File:** `dimer/core/compare.py` → `compare_sampled()`
+
+**Used when:** `use_sampling=True` is set in the config (cross-database only). The CLI offers this option automatically when BISECTION is declined and the tables are on different DB instances.
+
+### Core idea
+
+Instead of comparing every row, sample `sample_size` rows from the **source** table, fetch those same rows by primary key from the **target**, and classify the differences. The observed diff rate is then used to estimate the true diff rate for the entire table, with a Wilson score confidence interval bounding the estimate.
+
+This gives a probabilistic answer in a fraction of the time a full diff would take — regardless of whether the table has 10 million or 10 billion rows.
+
+### Source-perspective limitation
+
+Because rows are sampled **from the source**, any rows that exist only in the target (ADDED rows) are never seen by the algorithm. The diff rate and confidence interval reflect **source-perspective differences only** (DELETED + MODIFIED). This is an inherent property of Option B1 sampling.
+
+If detecting added rows is a requirement, use `HASH_DIFF` or `BISECTION` instead.
+
+### Constants
+
+| Constant | Default | Meaning |
+|---|---|---|
+| `SAMPLED_DEFAULT_SIZE` | 10,000 | Default number of rows to sample |
+| `SAMPLED_DEFAULT_CONFIDENCE` | 0.95 | Default Wilson CI confidence level |
+
+### Step 1 — Schema metadata and full row count
+
+Schema metadata is resolved exactly as in other algorithms. Then a `COUNT(*)` is run on the full source table — this count is used later for extrapolation and is stored in `metadata["source_row_count_full"]`.
+
+```sql
+SELECT COUNT(*) AS row_count FROM schema.table_a
+```
+
+### Step 2 — Sample rows from source
+
+Rows are drawn randomly from the source using `ORDER BY {random_func} LIMIT n`, where `random_func` comes from `DIALECTS["random_func"]`:
+
+| Connector | `random_func` |
+|---|---|
+| PostgreSQL | `RANDOM()` |
+| Snowflake | `RANDOM()` |
+| MySQL | `RAND()` |
+| BigQuery | `RAND()` |
+| Databricks | `RAND()` |
+
+For PostgreSQL this expands to:
+
+```sql
+SELECT col1, col2, ...
+FROM schema.table_a
+ORDER BY RANDOM()
+LIMIT 10000
+```
+
+All common columns are selected so that the sample rows are immediately usable for the column-level diff.
+
+### Step 3 — Fetch matching rows from target
+
+The key values from the sampled rows are used to build a `WHERE key IN (...)` query on the target, chunked into batches of `_WHERE_CHUNK_SIZE = 500` keys to keep individual SQL statements within safe length limits:
+
+```sql
+SELECT col1, col2, ...
+FROM schema.table_b
+WHERE (key_col = v1) OR (key_col = v2) OR ...   -- up to 500 keys per chunk
+```
+
+Rows missing from the target result set are DELETED. Rows present in both sides are candidates for MODIFIED.
+
+### Step 4 — Classify rows
+
+The static `_classify_rows()` helper is reused here exactly as in `BISECTION` leaf-node processing:
+
+- Keys in source sample but not in target → **DELETED**
+- Keys in both, but non-key column values differ → **MODIFIED**
+- Keys in both, values identical → **matched** (not reported)
+
+### Step 5 — Wilson score confidence interval
+
+The observed diff rate is `p̂ = k / n` where `k` = differing rows and `n` = actual sample size.
+
+The Wilson score CI (`_wilson_ci(k, n, confidence)`) is used rather than the naive normal approximation because it remains accurate when `p̂` is near 0 (tables that are mostly identical — the common case):
+
+```
+center = (p̂ + z²/2n) / (1 + z²/n)
+spread = z × sqrt(p̂(1−p̂)/n + z²/4n²) / (1 + z²/n)
+
+lower = center − spread
+upper = center + spread
+```
+
+`z` is the standard normal quantile for the chosen confidence level (1.96 for 95%). Pre-computed for 0.90, 0.95, and 0.99; a rational approximation is used for other values.
+
+### Step 6 — Extrapolation
+
+```python
+estimated_total_diffs = int(p_hat * source_row_count_full)
+```
+
+### Result metadata
+
+`DiffRun.metadata` is populated with:
+
+```python
+{
+    "sample_size": 9604,               # actual rows sampled (≤ requested)
+    "source_row_count_full": 50000000, # COUNT(*) of the full source table
+    "sampled_diff_count": 50,          # DELETED + MODIFIED in the sample
+    "observed_diff_rate": 0.0052,      # k / n
+    "estimated_diff_pct": 0.52,        # observed_diff_rate × 100
+    "ci_lower": 0.39,                  # Wilson CI lower bound (%)
+    "ci_upper": 0.65,                  # Wilson CI upper bound (%)
+    "margin_of_error": 0.13,           # (ci_upper − ci_lower) / 2 (%)
+    "confidence_level": 0.95,
+    "estimated_total_diffs": 260000,   # int(observed_diff_rate × full_count)
+}
+```
+
+`DiffRun.summary` counts are over the **sample** only (not extrapolated): `source_row_count = sample_size`, `target_row_count = matching rows found in target`.
+
+### Data transferred
+
+| Step | Data |
+|---|---|
+| Full count | One integer (COUNT result) |
+| Source sample | `sample_size` rows × all common columns from source |
+| Target fetch | Up to `sample_size` rows × all common columns from target |
+
+Total data transfer is `2 × sample_size × row_width` regardless of total table size. For a 10 M-row, 20-column table sampled at 10,000 rows, this is ~1/1000th of what `HASH_DIFF` Phase 1 alone would transfer.
+
+### Choosing a sample size
+
+The margin of error depends only on `sample_size`, not on total table size (binomial proportion CI property):
+
+| Target margin of error | Sample size needed (95% CI) |
+|---|---|
+| ±5% | 385 rows |
+| ±2% | 2,401 rows |
+| ±1% | 9,604 rows |
+| ±0.5% | 38,416 rows |
+
+### When it excels
+
+- Extremely large tables (hundreds of millions to billions of rows) where even BISECTION would be slow
+- Monitoring / alerting use cases where a probabilistic "roughly X% of rows differ" answer is sufficient
+- Initial investigation before committing to a full diff
+
+### When not to use it
+
+- When you need an exact diff (use `HASH_DIFF` or `BISECTION`)
+- When detecting ADDED rows in the target is a requirement
+- When the table is small enough for `HASH_DIFF` to complete quickly
+
+---
+
 ## Algorithm selection guide
 
 ```
@@ -343,8 +499,11 @@ Same database instance?
   └── No
         └── use_bisection=True?
               └── Yes  →  BISECTION  (NTILE hashing; best for very large tables)
-              └── No   →  HASH_DIFF  (two-phase; default for cross-DB)
-                              └── (for debugging / comparison: CROSS_DB_DIFF)
+              └── No
+                    └── use_sampling=True?
+                          └── Yes  →  SAMPLED  (statistical sample; probabilistic answer)
+                          └── No   →  HASH_DIFF  (two-phase; default for cross-DB)
+                                          └── (for debugging / comparison: CROSS_DB_DIFF)
 ```
 
 | Scenario | Recommended algorithm |
@@ -353,5 +512,6 @@ Same database instance?
 | Cross-DB, tables < 100k rows | `HASH_DIFF` (automatic) |
 | Cross-DB, same DB type (e.g. prod ↔ staging PostgreSQL) | `HASH_DIFF` (automatic) — identical rows cost only a hash |
 | Cross-DB, mixed DB types, < 1M rows | `HASH_DIFF` (automatic) |
-| Any table > 1M rows with localised changes | `BISECTION` (CLI auto-suggests; set `use_bisection=True`) |
+| Cross-DB, > 1M rows with localised changes | `BISECTION` (CLI auto-suggests; set `use_bisection=True`) |
+| Cross-DB, extremely large tables, probabilistic answer OK | `SAMPLED` (set `use_sampling=True`; does not detect ADDED rows) |
 | Debugging / verifying HASH_DIFF results | `CROSS_DB_DIFF` (call `compare_cross_database()` directly) |
