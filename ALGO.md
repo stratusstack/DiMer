@@ -6,18 +6,35 @@ DiMer implements five diff algorithms. Three are selected automatically based on
 |---|---|---|
 | `JOIN_DIFF` | Both tables on the same DB instance | SQL JOINs only — no data leaves the DB |
 | `HASH_DIFF` | Tables on different DB instances (default) | Narrow Phase 1 fetch; targeted Phase 2 |
-| `CROSS_DB_DIFF` | Legacy / explicit fallback | Full table fetch into Python |
+| `CROSS_DB_DIFF` | Explicit fallback | Full table fetch into Python |
 | `BISECTION` | Explicit opt-in | NTILE segment hashing; best for large tables |
 | `SAMPLED` | Explicit opt-in; cross-DB only | Statistical sample — estimates diff rate with Wilson CI |
 
-The selection logic in `compare()`:
+## Algorithm selection guide
 
 ```
-use_bisection flag set?   →  BISECTION
-use_sampling flag set?    →  SAMPLED  (cross-DB only; falls back to JOIN_DIFF if same-instance)
-same host + database?     →  JOIN_DIFF
-otherwise                →  HASH_DIFF
+Same database instance?
+  └── Yes  →  JOIN_DIFF  (SQL JOINs; no data leaves the DB)
+  └── No
+        └── use_bisection=True?
+              └── Yes  →  BISECTION  (NTILE hashing; best for very large tables)
+              └── No
+                    └── use_sampling=True?
+                          └── Yes  →  SAMPLED  (statistical sample; probabilistic answer)
+                          └── No   →  HASH_DIFF  (two-phase; default for cross-DB)
+                                          └── (for debugging / comparison: CROSS_DB_DIFF)
 ```
+
+| Scenario | Recommended algorithm |
+|---|---|
+| Both tables on the same host | `JOIN_DIFF` (automatic) |
+| Cross-DB, tables < 100k rows | `HASH_DIFF` (automatic) |
+| Cross-DB, same DB type (e.g. prod ↔ staging PostgreSQL) | `HASH_DIFF` (automatic) — identical rows cost only a hash |
+| Cross-DB, mixed DB types, < 1M rows | `HASH_DIFF` (automatic) |
+| Cross-DB, > 1M rows with localised changes | `BISECTION` (CLI auto-suggests; set `use_bisection=True`) |
+| Cross-DB, extremely large tables, probabilistic answer OK | `SAMPLED` (set `use_sampling=True`; does not detect ADDED rows) |
+| Debugging / verifying HASH_DIFF results | `CROSS_DB_DIFF` (call `compare_cross_database()` directly) |
+
 
 `CROSS_DB_DIFF` is not selected automatically — it is available by calling `compare_cross_database()` directly.
 
@@ -491,27 +508,3 @@ The margin of error depends only on `sample_size`, not on total table size (bino
 
 ---
 
-## Algorithm selection guide
-
-```
-Same database instance?
-  └── Yes  →  JOIN_DIFF  (SQL JOINs; no data leaves the DB)
-  └── No
-        └── use_bisection=True?
-              └── Yes  →  BISECTION  (NTILE hashing; best for very large tables)
-              └── No
-                    └── use_sampling=True?
-                          └── Yes  →  SAMPLED  (statistical sample; probabilistic answer)
-                          └── No   →  HASH_DIFF  (two-phase; default for cross-DB)
-                                          └── (for debugging / comparison: CROSS_DB_DIFF)
-```
-
-| Scenario | Recommended algorithm |
-|---|---|
-| Both tables on the same host | `JOIN_DIFF` (automatic) |
-| Cross-DB, tables < 100k rows | `HASH_DIFF` (automatic) |
-| Cross-DB, same DB type (e.g. prod ↔ staging PostgreSQL) | `HASH_DIFF` (automatic) — identical rows cost only a hash |
-| Cross-DB, mixed DB types, < 1M rows | `HASH_DIFF` (automatic) |
-| Cross-DB, > 1M rows with localised changes | `BISECTION` (CLI auto-suggests; set `use_bisection=True`) |
-| Cross-DB, extremely large tables, probabilistic answer OK | `SAMPLED` (set `use_sampling=True`; does not detect ADDED rows) |
-| Debugging / verifying HASH_DIFF results | `CROSS_DB_DIFF` (call `compare_cross_database()` directly) |

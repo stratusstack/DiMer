@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 from dimer.core.compare import Diffcheck, BISECTION_DEFAULT_THRESHOLD, SAMPLED_DEFAULT_SIZE, SAMPLED_DEFAULT_CONFIDENCE
 from dimer.core.factory import ConnectorFactory
-from dimer.core.models import ComparisonConfig, DiffAlgorithm, DiffRun, ConnectionConfig
+from dimer.core.models import ComparisonConfig, DiffAlgorithm, DiffRun, ConnectionConfig, TableMetadata
 
 # ---------------------------------------------------------------------------
 # Logging configuration
@@ -323,11 +323,16 @@ def _parse_fq_table(fq_table: str) -> Tuple[Optional[str], str]:
     return parts[-2], parts[-1]
 
 
-def detect_or_prompt_keys(connector, fq_table: str, label: str) -> List[str]:
+def detect_or_prompt_keys(connector, fq_table: str, label: str) -> Tuple[List[str], TableMetadata]:
     """
     Try to detect primary key columns from table metadata.
     If found, ask the user to confirm or override.
     If not found (or metadata unavailable), prompt for manual entry.
+
+    Raises if get_table_metadata() fails — metadata is mandatory.
+
+    Returns:
+        (keys, metadata)
     """
     schema, table = _parse_fq_table(fq_table)
     detected: List[str] = []
@@ -337,13 +342,14 @@ def detect_or_prompt_keys(connector, fq_table: str, label: str) -> List[str]:
         metadata = connector.get_table_metadata(table, schema_name=schema)
         detected = [col.name for col in metadata.columns if col.is_primary_key]
     except Exception as e:
-        print(f"    {_yellow('⚠')}  Could not read metadata: {e}")
+        print(f"    {_red('✗')}  Could not read table metadata for {fq_table}: {e}")
+        raise
 
     if detected:
         print(f"    {_green('✓')}  Primary keys detected: {_bold(', '.join(detected))}")
         ans = input("    Use these as join keys? [Y/n]: ").strip().lower()
         if ans in ("", "y", "yes"):
-            return detected
+            return detected, metadata
 
     # Manual entry
     print(f"    {_dim('Enter the column(s) to use as join keys (comma-separated).')}")
@@ -351,7 +357,7 @@ def detect_or_prompt_keys(connector, fq_table: str, label: str) -> List[str]:
         raw = input("    > ").strip()
         keys = [k.strip() for k in raw.split(",") if k.strip()]
         if keys:
-            return keys
+            return keys, metadata
         print(f"    {_red('At least one key column is required.')}")
 
 
@@ -361,16 +367,16 @@ def detect_or_prompt_keys(connector, fq_table: str, label: str) -> List[str]:
 
 
 def prompt_bisection(
-    connector1,
-    connector2,
     fq1: str,
     fq2: str,
     keys1: List[str],
-) -> "Tuple[bool, Optional[str], int]":
+    row_count1: Optional[int],
+    row_count2: Optional[int],
+) -> Tuple[bool, Optional[str], int]:
     """Prompt the user about whether to use the BISECTION algorithm.
 
-    Does a best-effort COUNT(*) on the source table; auto-suggests bisection
-    when the table exceeds 1 million rows.
+    Uses pre-fetched row counts from table metadata; auto-suggests bisection
+    when either table exceeds 1 million rows.
 
     Returns:
         (use_bisection, bisection_key_override, threshold)
@@ -379,28 +385,25 @@ def prompt_bisection(
 
     print(f"\n  {_bold('Algorithm selection')}")
 
-    # Try to estimate row count on source
-    row_count: Optional[int] = None
-    try:
-        from dimer.core.compare import _validate_identifier
-        case = getattr(connector1, "IDENTIFIER_CASE", "preserve")
-        safe_table = _validate_identifier(fq1, case)
-        result = connector1.execute_query(f"SELECT COUNT(*) AS row_count FROM {safe_table}")
-        df = result.data
-        if df is not None and len(df) > 0:
-            row_count = int(df.iloc[0, 0])
-            print(f"  Source row count : {row_count:,}")
-    except Exception:
-        pass  # non-fatal; proceed without count
+    if row_count1 is not None:
+        print(f"  Source row count from {fq1}: {row_count1:,}")
+    else:
+        print(f"  {_yellow('⚠')}  Row count unavailable for {fq1} — auto-suggest disabled.")
+    if row_count2 is not None:
+        print(f"  Source row count from {fq2}: {row_count2:,}")
+    else:
+        print(f"  {_yellow('⚠')}  Row count unavailable for {fq2} — auto-suggest disabled.")
 
-    auto_suggest = row_count is not None and row_count > ROW_SUGGEST_THRESHOLD
+    row_count_threshold_exceeded1 = (row_count1 is not None and row_count1 > ROW_SUGGEST_THRESHOLD) 
+    row_count_threshold_exceeded2 = (row_count2 is not None and row_count2 > ROW_SUGGEST_THRESHOLD)
+    auto_suggest = row_count_threshold_exceeded1 or row_count_threshold_exceeded2
     if auto_suggest:
         print(
-            f"  {_yellow('⚠')}  Large table detected ({row_count:,} rows). "
+            f"  {_yellow('⚠')}  Large table detected ({row_count1 if row_count_threshold_exceeded1 else row_count2:,} rows). "
             f"BISECTION algorithm recommended."
         )
 
-    prompt = "  Use BISECTION algorithm? [y/N]: " if not auto_suggest else "  Use BISECTION algorithm? [Y/n]: "
+    prompt = "  Use BISECTION algorithm? [Y/n]: " if auto_suggest else "  Use BISECTION algorithm? [y/N]: "
     ans = input(prompt).strip().lower()
 
     if auto_suggest:
@@ -739,23 +742,22 @@ def main() -> None:
             fq1 = prompt_fq_table(src1, "Target 1")
             fq2 = prompt_fq_table(src2, "Target 2")
 
-            keys1 = detect_or_prompt_keys(connector1, fq1, "Target 1")
-            keys2 = detect_or_prompt_keys(connector2, fq2, "Target 2")
+            keys1, meta1 = detect_or_prompt_keys(connector1, fq1, "Target 1")
+            keys2, meta2 = detect_or_prompt_keys(connector2, fq2, "Target 2")
 
-            use_bisection, bisection_key, bisection_threshold = prompt_bisection(
-                connector1, connector2, fq1, fq2, keys1
-            )
+            same_instance = connector1.connection_config.host == connector2.connection_config.host and connector1.connection_config.database == connector2.connection_config.database
 
+            use_bisection = False
             use_sampling = False
-            sample_size_val = SAMPLED_DEFAULT_SIZE
-            sample_confidence = SAMPLED_DEFAULT_CONFIDENCE
-            if not use_bisection:
-                # Sampling is only meaningful for cross-database comparisons
-                same_instance = (
-                    connector1.connection_config.host == connector2.connection_config.host
-                    and connector1.connection_config.database == connector2.connection_config.database
-                )
-                if not same_instance:
+
+            if not same_instance:
+
+                use_bisection, bisection_key, bisection_threshold = prompt_bisection(fq1, fq2, keys1, meta1.row_count, meta2.row_count)
+                
+                sample_size_val = SAMPLED_DEFAULT_SIZE
+                sample_confidence = SAMPLED_DEFAULT_CONFIDENCE
+                if not use_bisection:
+                    # Sampling is only meaningful for cross-database comparisons
                     use_sampling, sample_size_val, sample_confidence = prompt_sampling()
 
             # Confirmation summary
@@ -780,14 +782,14 @@ def main() -> None:
                     db1: ComparisonConfig = {"fq_table_name": fq1, "keys": keys1}
                     db2: ComparisonConfig = {"fq_table_name": fq2, "keys": keys2}
                     if use_bisection:
-                        db1["use_bisection"] = True  # type: ignore[typeddict-unknown-key]
-                        db1["bisection_threshold"] = bisection_threshold  # type: ignore[typeddict-unknown-key]
+                        db1["use_bisection"] = True
+                        db1["bisection_threshold"] = bisection_threshold
                         if bisection_key:
-                            db1["bisection_key"] = bisection_key  # type: ignore[typeddict-unknown-key]
+                            db1["bisection_key"] = bisection_key
                     elif use_sampling:
-                        db1["use_sampling"] = True  # type: ignore[typeddict-unknown-key]
-                        db1["sample_size"] = sample_size_val  # type: ignore[typeddict-unknown-key]
-                        db1["confidence"] = sample_confidence  # type: ignore[typeddict-unknown-key]
+                        db1["use_sampling"] = True
+                        db1["sample_size"] = sample_size_val
+                        db1["confidence"] = sample_confidence
                     result: DiffRun = Diffcheck(connector1, connector2, db1, db2).compare()
                     display_result(result)
 
