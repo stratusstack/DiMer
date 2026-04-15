@@ -238,8 +238,10 @@ class TestDatabricksIntegration:
             assert isinstance(df, pd.DataFrame)
             assert not df.empty
 
-            print(f"DBR version: {df.iloc[0]['dbr_version']}")
-            print(f"Current catalog: {df.iloc[0]['current_catalog']}")
+            # Column names may be upper or lower case depending on connection method
+            cols_lower = {c.lower(): c for c in df.columns}
+            print(f"DBR version: {df.iloc[0][cols_lower['dbr_version']]}")
+            print(f"Current catalog: {df.iloc[0][cols_lower['current_catalog']]}")
 
         finally:
             connector.close()
@@ -273,7 +275,8 @@ class TestDatabricksIntegration:
             assert isinstance(df, pd.DataFrame)
             assert not df.empty
 
-            total_rows = df.iloc[0]["total_rows"]
+            # Column name casing varies by connection method
+            total_rows = df.iloc[0][df.columns[0]]
             print(f"Total rows in '{TARGET_TABLE}': {total_rows}")
             assert total_rows >= 0
 
@@ -317,7 +320,8 @@ class TestDatabricksIntegration:
             df = result.data
 
             assert not df.empty
-            assert df.iloc[0]["test_value"] == 1
+            # Column name casing varies by connection method
+            assert df.iloc[0][df.columns[0]] == 1
 
         # Connection should be closed after exiting context
         assert connector.connection is None

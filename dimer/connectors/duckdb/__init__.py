@@ -1,0 +1,1 @@
+"""DuckDB connector implementation."""

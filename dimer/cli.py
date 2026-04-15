@@ -115,6 +115,7 @@ SUPPORTED_SOURCES: List[str] = [
     "mysql",
     "bigquery",
     "databricks",
+    "duckdb",
 ]
 
 REQUIRED_VARS: Dict[str, List[str]] = {
@@ -146,6 +147,9 @@ REQUIRED_VARS: Dict[str, List[str]] = {
         "DATABRICKS_TOKEN",
         "DATABRICKS_HTTP_PATH",
     ],
+    "duckdb": [
+        "DUCKDB_DATABASE",
+    ],
 }
 
 # Shown to the user when they are asked to enter the FQ table name
@@ -161,6 +165,7 @@ FQ_HINTS: Dict[str, str] = {
         "schema.table              e.g. default.orders\n"
         "                          or   catalog.schema.table"
     ),
+    "duckdb": "schema.table              e.g. main.orders",
 }
 
 
@@ -225,6 +230,11 @@ def build_config(source_type: str) -> ConnectionConfig:
                 "catalog": os.getenv("DATABRICKS_CATALOG", "main"),
                 "schema": os.getenv("DATABRICKS_SCHEMA", "default"),
             },
+        )
+    if source_type == "duckdb":
+        return ConnectionConfig(
+            host=os.getenv("DUCKDB_DATABASE", ":memory:"),
+            schema_name=os.getenv("DUCKDB_SCHEMA", "main"),
         )
     raise ValueError(f"Unknown source type: {source_type!r}")
 
