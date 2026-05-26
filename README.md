@@ -105,7 +105,7 @@ DiMer selects the algorithm automatically based on the data sources involved. On
 | `HASH_DIFF` | Different DB instances (default) | Narrow key+hash fetch, then targeted row fetch |
 | `BISECTION` | Explicit opt-in (large tables) | NTILE segment hashing — fetches only differing buckets |
 | `SAMPLED` | Explicit opt-in (very large tables, cross-DB only) | Statistical sample — estimates diff rate with confidence interval |
-| `CROSS_DB_DIFF` | Legacy / direct call only | Full table fetch into Python |
+| `FULL_FETCH_DIFF` | Legacy / direct call only | Full table fetch into Python |
 
 **BISECTION** is auto-suggested by the CLI when the source table exceeds 1 million rows. To activate it in code, set `use_bisection=True` in the config:
 

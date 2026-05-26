@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS diff_run (
     job_id                 TEXT NOT NULL REFERENCES diff_job(job_id),
     run_at                 TEXT NOT NULL,    -- ISO-8601 UTC timestamp
     status                 TEXT NOT NULL,   -- 'success' | 'failed'
-    algorithm              TEXT,            -- 'JOIN_DIFF' | 'HASH_DIFF' | 'CROSS_DB_DIFF' | 'BISECTION'
+    algorithm              TEXT,            -- 'JOIN_DIFF' | 'HASH_DIFF' | 'FULL_FETCH_DIFF' | 'BISECTION'
     execution_time_seconds REAL,
     match                  INTEGER,         -- 1 = tables identical, 0 = differ
     error                  TEXT,            -- error message if status = 'failed'

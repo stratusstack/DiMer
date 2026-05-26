@@ -1,4 +1,4 @@
-"""CROSS_DB_DIFF algorithm — full in-memory cross-database comparison."""
+"""FULL_FETCH_DIFF algorithm — full in-memory cross-database comparison."""
 
 import time
 from typing import Any, Dict, List, Optional
@@ -39,7 +39,7 @@ class CrossDbDiffAlgorithm(BaseAlgorithm):
             return DiffRun(
                 match=False,
                 error="Key column lists must have equal length",
-                algorithm=DiffAlgorithm.CROSS_DB_DIFF,
+                algorithm=DiffAlgorithm.FULL_FETCH_DIFF,
             )
 
         # 1. Schema metadata
@@ -64,7 +64,7 @@ class CrossDbDiffAlgorithm(BaseAlgorithm):
                 match=False,
                 schema_differences=schema_diff,
                 error="No common columns found between tables",
-                algorithm=DiffAlgorithm.CROSS_DB_DIFF,
+                algorithm=DiffAlgorithm.FULL_FETCH_DIFF,
             )
 
         safe_a = _validate_identifier(table_a, case_a)
@@ -187,6 +187,6 @@ class CrossDbDiffAlgorithm(BaseAlgorithm):
             row_diffs=row_diffs,
             schema_differences=schema_diff,
             common_columns=common_columns,
-            algorithm=DiffAlgorithm.CROSS_DB_DIFF,
+            algorithm=DiffAlgorithm.FULL_FETCH_DIFF,
             execution_time_seconds=time.time() - start,
         )

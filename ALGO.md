@@ -2,13 +2,14 @@
 
 DiMer implements five diff algorithms. Three are selected automatically based on context; two require explicit opt-in.
 
-| Algorithm | Selected when | Key characteristic |
-|---|---|---|
-| `JOIN_DIFF` | Both tables on the same DB instance | SQL JOINs only — no data leaves the DB |
-| `HASH_DIFF` | Tables on different DB instances (default) | Narrow Phase 1 fetch; targeted Phase 2 |
-| `CROSS_DB_DIFF` | Explicit fallback | Full table fetch into Python |
-| `BISECTION` | Explicit opt-in | NTILE segment hashing; best for large tables |
-| `SAMPLED` | Explicit opt-in; cross-DB only | Statistical sample — estimates diff rate with Wilson CI |
+| Algorithm       | Selected when                              | Key characteristic                                      |
+| --------------- | ------------------------------------------ | ------------------------------------------------------- |
+| `JOIN_DIFF`     | Both tables on the same DB instance        | SQL JOINs only — no data leaves the DB                  |
+| `HASH_DIFF`     | Tables on different DB instances (default) | Narrow Phase 1 fetch; targeted Phase 2                  |
+| `FULL_FETCH_DIFF` | Explicit fallback                          | Full table fetch into Python                            |
+| `BISECTION`     | Explicit opt-in                            | NTILE segment hashing; best for large tables            |
+| `SAMPLED`       | Explicit opt-in; cross-DB only             | Statistical sample — estimates diff rate with Wilson CI |
+|                 |                                            |                                                         |
 
 ## Algorithm selection guide
 
@@ -22,7 +23,7 @@ Same database instance?
                     └── use_sampling=True?
                           └── Yes  →  SAMPLED  (statistical sample; probabilistic answer)
                           └── No   →  HASH_DIFF  (two-phase; default for cross-DB)
-                                          └── (for debugging / comparison: CROSS_DB_DIFF)
+                                          └── (for debugging / comparison: FULL_FETCH_DIFF)
 ```
 
 | Scenario | Recommended algorithm |
@@ -33,10 +34,10 @@ Same database instance?
 | Cross-DB, mixed DB types, < 1M rows | `HASH_DIFF` (automatic) |
 | Cross-DB, > 1M rows with localised changes | `BISECTION` (CLI auto-suggests; set `use_bisection=True`) |
 | Cross-DB, extremely large tables, probabilistic answer OK | `SAMPLED` (set `use_sampling=True`; does not detect ADDED rows) |
-| Debugging / verifying HASH_DIFF results | `CROSS_DB_DIFF` (call `compare_cross_database()` directly) |
+| Debugging / verifying HASH_DIFF results | `FULL_FETCH_DIFF` (call `compare_cross_database()` directly) |
 
 
-`CROSS_DB_DIFF` is not selected automatically — it is available by calling `compare_cross_database()` directly.
+`FULL_FETCH_DIFF` is not selected automatically — it is available by calling `compare_cross_database()` directly.
 
 ---
 
@@ -80,7 +81,8 @@ Same pattern with the join reversed.
 
 **Step 5 — Modified rows** (present in both, non-key columns differ)
 
-A per-row hash is built in SQL using the connector's `DIALECTS["hash"]`, `DIALECTS["cast_to_text"]`, and `DIALECTS["concatenation"]`. For PostgreSQL this expands to:
+A per-row hash is built in SQL using the connector's `DIALECTS["hash"]`, `DIALECTS["cast_to_text"]`, and `DIALECTS["concatenation"]`. 
+For example, for PostgreSQL this expands to:
 
 ```sql
 SELECT a.key_col
@@ -103,11 +105,11 @@ Full row values are fetched for both sides, then compared column-by-column in Py
 
 ### Data transferred
 
-| Step | Columns fetched |
-|---|---|
-| Deleted / Added | Key columns only |
-| Modified (detection) | None (hash computed in SQL) |
-| Modified (detail) | All common columns, ≤ 100 rows per side |
+| Step                 | Columns fetched                         |
+| -------------------- | --------------------------------------- |
+| Deleted / Added      | Key columns only                        |
+| Modified (detection) | None                                    |
+| Modified (detail)    | All common columns, ≤ 100 rows per side |
 
 ### When it excels
 
@@ -125,7 +127,7 @@ Full row values are fetched for both sides, then compared column-by-column in Py
 
 ### How it works
 
-Two phases. Phase 1 is always a narrow fetch (two logical columns per row regardless of table width). Phase 2 is a targeted fetch of only the rows that require closer inspection.
+Two phases. Phase 1 is always a narrow fetch. Phase 2 is a targeted fetch of only the rows that require closer inspection.
 
 ### Phase 1 — Narrow fetch
 
@@ -143,13 +145,7 @@ The hash expression is built with `_build_hash_expr()` using each connector's `D
 
 Python builds two dictionaries: `{key_tuple → hash}` for each side.
 
-### Set operations (no further fetch needed)
-
-```
-keys_only_in_a  →  DELETED rows  (done — no Phase 2 needed)
-keys_only_in_b  →  ADDED rows   (done — no Phase 2 needed)
-keys_in_both    →  modification candidates
-```
+Analyzing this output from both source and target will help find DELETED rows, ADDED rows and MODIFIED rows.
 
 ### Phase 2 — Modification candidates
 
@@ -184,22 +180,22 @@ B rows are remapped to A-side canonical column names, then:
 
 ### Data transferred
 
-| Step | Columns fetched | Rows fetched |
-|---|---|---|
-| Phase 1 | 2 (key + hash) | All rows |
-| ADDED / DELETED | None | 0 |
-| Phase 2 (same DB type) | All common columns | Only hash-differing rows |
-| Phase 2 (different DB type) | All common columns | All common-key rows |
+| Step                        | Columns fetched    | Rows fetched             |
+| --------------------------- | ------------------ | ------------------------ |
+| Phase 1                     | 2 (key + hash)     | All rows                 |
+| ADDED / DELETED             | None               | 0                        |
+| Phase 2 (same DB type)      | All common columns | Only hash-differing rows |
+| Phase 2 (different DB type) | All common columns | All common-key rows      |
 
-### Compared to CROSS_DB_DIFF
+### Compared to FULL_FETCH_DIFF
 
 For a 1 M-row table with 30 columns and 500 modifications:
 
-| | CROSS_DB_DIFF | HASH_DIFF (same type) | HASH_DIFF (diff type) |
-|---|---|---|---|
-| Phase 1 rows × cols | 1 M × 30 | 1 M × 2 | 1 M × 2 |
-| Phase 2 rows × cols | — | 500 × 30 | common × 30 |
-| ADDED/DELETED fetch | Full rows | None | None |
+|                      | FULL_FETCH_DIFF | HASH_DIFF (same type) | HASH_DIFF (diff type) |
+| -------------------- | --------------- | --------------------- | --------------------- |
+| Phase 1: rows × cols | 1 M × 30        | 1 M × 2               | 1 M × 2               |
+| Phase 2: rows × cols | —               | 500 × 30              | common × 30           |
+| ADDED/DELETED fetch  | Full rows       | None                  | None                  |
 
 ### When it excels
 
@@ -209,7 +205,7 @@ For a 1 M-row table with 30 columns and 500 modifications:
 
 ---
 
-## CROSS_DB_DIFF
+## FULL_FETCH_DIFF
 
 **File:** `dimer/core/compare.py` → `compare_cross_database()`
 
@@ -258,10 +254,10 @@ Divide each table into N equal-sized buckets ordered by a sortable `bisection_ke
 
 ### Constants
 
-| Constant | Default | Meaning |
-|---|---|---|
-| `BISECTION_DEFAULT_SEGMENTS` | 16 | Initial number of NTILE buckets |
-| `BISECTION_DEFAULT_THRESHOLD` | 1000 | Bucket row count above which a warning is issued |
+| Constant                      | Default | Meaning                                          |
+| ----------------------------- | ------- | ------------------------------------------------ |
+| `BISECTION_DEFAULT_SEGMENTS`  | 16      | Initial number of NTILE buckets                  |
+| `BISECTION_DEFAULT_THRESHOLD` | 1000    | Bucket row count above which a warning is issued |
 
 ### Step 1 — Schema metadata and row counts
 

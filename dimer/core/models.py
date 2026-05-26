@@ -43,7 +43,7 @@ class DiffAlgorithm(str, Enum):
     """
 
     JOIN_DIFF = "JOIN_DIFF"         # SQL JOIN-based; same-database tables only
-    CROSS_DB_DIFF = "CROSS_DB_DIFF" # full fetch + Python hash; cross-database (legacy)
+    FULL_FETCH_DIFF = "FULL_FETCH_DIFF" # full fetch + Python hash; cross-database (legacy)
     HASH_DIFF = "HASH_DIFF"         # two-phase: narrow key+hash fetch, then targeted row fetch
     BISECTION = "BISECTION"          # NTILE segment hashing; explicit opt-in
     SAMPLED = "SAMPLED"             # statistical sampling; cross-database only; explicit opt-in

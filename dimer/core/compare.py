@@ -107,20 +107,20 @@ class Diffcheck:
         logger.info("Starting table comparison")
 
         # Bisection is an explicit opt-in (checked before instance routing)
-        if self._left_config.get('use_bisection') or self._right_config.get('use_bisection'):  # type: ignore[attr-defined]
+        if self._left_config.get('use_bisection') or self._right_config.get('use_bisection'):
             logger.info("Bisection algorithm selected — using NTILE segment comparison")
             return self._make_algorithm(BisectionAlgorithm).run()
 
         # Sampling is an explicit opt-in; only valid for cross-database comparisons
-        if self._left_config.get('use_sampling'):  # type: ignore[attr-defined]
+        if self._left_config.get('use_sampling'):
             if self._is_same_instance():
                 logger.warning(
                     "Sampling is only supported for cross-database comparisons; "
                     "falling back to JOIN_DIFF"
                 )
                 return self._make_algorithm(JoinDiffAlgorithm).run()
-            sample_size = self._left_config.get('sample_size', SAMPLED_DEFAULT_SIZE)  # type: ignore[attr-defined]
-            confidence = self._left_config.get('confidence', SAMPLED_DEFAULT_CONFIDENCE)  # type: ignore[attr-defined]
+            sample_size = self._left_config.get('sample_size', SAMPLED_DEFAULT_SIZE)
+            confidence = self._left_config.get('confidence', SAMPLED_DEFAULT_CONFIDENCE)
             logger.info(
                 f"Sampled algorithm selected — source-perspective sampling "
                 f"(n={sample_size}, confidence={confidence})"
@@ -136,7 +136,7 @@ class Diffcheck:
             return self._make_algorithm(HashDiffAlgorithm).run()
 
     def compare_cross_database(self) -> DiffRun:
-        """Compare tables using the full in-memory CROSS_DB_DIFF algorithm.
+        """Compare tables using the full in-memory FULL_FETCH_DIFF algorithm.
 
         Not selected automatically — available for direct invocation when
         debugging or verifying HASH_DIFF results (see ALGO.md).
