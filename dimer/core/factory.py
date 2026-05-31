@@ -145,6 +145,14 @@ def _auto_register_connectors() -> None:
         logger.debug("Databricks connector not available")
 
     try:
+        # Import and register DuckDB connector
+        from dimer.connectors.duckdb.connector import DuckDBConnector
+
+        ConnectorFactory.register_connector("duckdb", DuckDBConnector)
+    except ImportError:
+        logger.debug("DuckDB connector not available")
+
+    try:
         # Import and register file-based connectors
         from dimer.connectors.files.csv_connector import CSVConnector
         from dimer.connectors.files.parquet_connector import ParquetConnector
