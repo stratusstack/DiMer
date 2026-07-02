@@ -11,6 +11,7 @@ from dimer.core.algorithms.base import (
     MAX_DETAIL_ROWS,
     _get_col_value,
     _python_row_hash,
+    _supports_sql,
     _validate_identifier,
 )
 from dimer.core.models import DiffAlgorithm, DiffResult, DiffRow, DiffRun, RowStatus
@@ -75,13 +76,18 @@ class CrossDbDiffAlgorithm(BaseAlgorithm):
         cols_select_b = ", ".join(_validate_identifier(c, case_b) for c in common_columns_b)
 
         # 2. Fetch all rows from both tables (with row limit warning)
-        query_a = f"SELECT {cols_select_a} FROM {safe_a} ORDER BY {safe_keys_a}"
-        query_b = f"SELECT {cols_select_b} FROM {safe_b} ORDER BY {safe_keys_b}"
-
         logger.info("Fetching all rows from source table")
-        rows_a = self._query_rows(self._left_connector, query_a)
+        if _supports_sql(self._left_connector):
+            query_a = f"SELECT {cols_select_a} FROM {safe_a} ORDER BY {safe_keys_a}"
+            rows_a = self._query_rows(self._left_connector, query_a)
+        else:
+            rows_a = self._left_connector.fetch_all_rows(table_a, common_columns)
         logger.info("Fetching all rows from target table")
-        rows_b = self._query_rows(self._right_connector, query_b)
+        if _supports_sql(self._right_connector):
+            query_b = f"SELECT {cols_select_b} FROM {safe_b} ORDER BY {safe_keys_b}"
+            rows_b = self._query_rows(self._right_connector, query_b)
+        else:
+            rows_b = self._right_connector.fetch_all_rows(table_b, common_columns_b)
 
         count_a = len(rows_a)
         count_b = len(rows_b)

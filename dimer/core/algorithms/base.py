@@ -41,6 +41,29 @@ _WHERE_CHUNK_SIZE = 500
 SAMPLED_DEFAULT_SIZE = 10_000
 SAMPLED_DEFAULT_CONFIDENCE = 0.95
 
+# Bloom prefilter defaults
+BLOOM_DEFAULT_FPR = 0.01
+
+# Embedding similarity defaults
+EMBEDDING_DEFAULT_METRIC = "cosine"
+EMBEDDING_DEFAULT_THRESHOLD = 1e-3
+
+
+def _supports_sql(connector) -> bool:
+    """True when the connector executes SQL (default for all connectors).
+
+    Document-store connectors (e.g. MongoDB) set ``SUPPORTS_SQL = False`` and
+    instead expose data-access primitives (``count_rows``, ``fetch_all_rows``,
+    ``fetch_rows_by_keys``, ``sample_rows``, ``fetch_key_hashes``) that the
+    algorithms call in place of generated SQL.
+    """
+    return getattr(connector, "SUPPORTS_SQL", True)
+
+
+def _raw_table(safe_table: str) -> str:
+    """Recover the raw dotted table name from a quoted identifier."""
+    return safe_table.replace('"', '')
+
 
 # ---------------------------------------------------------------------------
 # SQL identifier helpers
@@ -228,6 +251,8 @@ class BaseAlgorithm(ABC):
 
     def _count_rows(self, connector, safe_table: str) -> int:
         """Execute COUNT(*) on a table and return the integer result."""
+        if not _supports_sql(connector):
+            return int(connector.count_rows(_raw_table(safe_table)))
         sql = f"SELECT COUNT(*) AS row_count FROM {safe_table}"
         result = connector.execute_query(sql)
         df = result.data
@@ -324,6 +349,11 @@ class BaseAlgorithm(ABC):
         Executes one query per chunk of ``_WHERE_CHUNK_SIZE`` keys and
         concatenates the results.
         """
+        if not _supports_sql(connector):
+            columns = [c.strip().strip('"') for c in col_select.split(',')]
+            return connector.fetch_rows_by_keys(
+                _raw_table(safe_table), columns, key_dicts, key_cols
+            )
         all_rows: List[Dict[str, Any]] = []
         for i in range(0, len(key_dicts), _WHERE_CHUNK_SIZE):
             chunk = key_dicts[i:i + _WHERE_CHUNK_SIZE]

@@ -153,6 +153,42 @@ def _auto_register_connectors() -> None:
         logger.debug("DuckDB connector not available")
 
     try:
+        # Import and register CockroachDB connector (PostgreSQL wire-compatible)
+        from dimer.connectors.cockroachdb.connector import CockroachDBConnector
+
+        ConnectorFactory.register_connector("cockroachdb", CockroachDBConnector)
+        ConnectorFactory.register_connector("cockroach", CockroachDBConnector)
+        ConnectorFactory.register_connector("crdb", CockroachDBConnector)
+    except ImportError:
+        logger.debug("CockroachDB connector not available")
+
+    try:
+        # Import and register YugabyteDB connector (PostgreSQL fork)
+        from dimer.connectors.yugabyte.connector import YugabyteConnector
+
+        ConnectorFactory.register_connector("yugabyte", YugabyteConnector)
+        ConnectorFactory.register_connector("yugabytedb", YugabyteConnector)
+    except ImportError:
+        logger.debug("YugabyteDB connector not available")
+
+    try:
+        # Import and register TiDB connector (MySQL wire-compatible)
+        from dimer.connectors.tidb.connector import TiDBConnector
+
+        ConnectorFactory.register_connector("tidb", TiDBConnector)
+    except ImportError:
+        logger.debug("TiDB connector not available")
+
+    try:
+        # Import and register MongoDB connector (document store)
+        from dimer.connectors.mongodb.connector import MongoDBConnector
+
+        ConnectorFactory.register_connector("mongodb", MongoDBConnector)
+        ConnectorFactory.register_connector("mongo", MongoDBConnector)
+    except ImportError:
+        logger.debug("MongoDB connector not available")
+
+    try:
         # Import and register file-based connectors
         from dimer.connectors.files.csv_connector import CSVConnector
         from dimer.connectors.files.parquet_connector import ParquetConnector

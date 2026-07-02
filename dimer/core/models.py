@@ -47,6 +47,8 @@ class DiffAlgorithm(str, Enum):
     HASH_DIFF = "HASH_DIFF"         # two-phase: narrow key+hash fetch, then targeted row fetch
     BISECTION = "BISECTION"          # NTILE segment hashing; explicit opt-in
     SAMPLED = "SAMPLED"             # statistical sampling; cross-database only; explicit opt-in
+    BLOOM = "BLOOM"                 # Bloom-filter prefilter; cheap "definitely differs" signal; explicit opt-in
+    EMBEDDING_SIMILARITY = "EMBEDDING_SIMILARITY"  # per-id vector distance diff; explicit opt-in
 
 
 class RowStatus(Enum):
@@ -171,6 +173,36 @@ class SamplingConfig(ComparisonConfig, total=False):
     sample_size: int    # number of rows to sample from source (default: 10_000)
     confidence: float   # Wilson CI confidence level — 0.90, 0.95, or 0.99 (default: 0.95)
     use_sampling: bool  # explicit opt-in flag
+
+
+class BloomConfig(ComparisonConfig, total=False):
+    """Extends ComparisonConfig with optional Bloom-prefilter parameters.
+
+    BLOOM is a cheap prefilter, not an exact diff: rows reported as differing
+    are *definitely* differing (Bloom filters have no false negatives for
+    membership, so a miss is a guaranteed difference), but up to ``bloom_fpr``
+    of truly differing rows may be missed (false-positive hits).  Use it to
+    decide quickly whether a full HASH_DIFF / BISECTION run is worth it.
+    """
+
+    use_bloom: bool     # explicit opt-in flag
+    bloom_fpr: float    # target false-positive rate for the filters (default: 0.01)
+
+
+class EmbeddingConfig(ComparisonConfig, total=False):
+    """Extends ComparisonConfig with optional embedding-similarity parameters.
+
+    Designed for vector sources (pgvector today; dedicated vector-DB
+    connectors later) where row-hash equality is meaningless: two index
+    builds can store the same logical embedding with float noise.  A row is
+    MODIFIED when the distance between its source and target vectors exceeds
+    ``distance_threshold``.
+    """
+
+    use_embedding: bool       # explicit opt-in flag
+    vector_column: str        # column holding the embedding (required at runtime)
+    distance_metric: str      # 'cosine' (default) or 'l2'
+    distance_threshold: float # max tolerated distance before MODIFIED (default: 1e-3)
 
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,15 @@ from typing import Dict, List, Optional, Tuple
 import structlog
 from dotenv import load_dotenv
 
-from dimer.core.compare import Diffcheck, BISECTION_DEFAULT_THRESHOLD, SAMPLED_DEFAULT_SIZE, SAMPLED_DEFAULT_CONFIDENCE
+from dimer.core.compare import (
+    Diffcheck,
+    BISECTION_DEFAULT_THRESHOLD,
+    BLOOM_DEFAULT_FPR,
+    EMBEDDING_DEFAULT_METRIC,
+    EMBEDDING_DEFAULT_THRESHOLD,
+    SAMPLED_DEFAULT_SIZE,
+    SAMPLED_DEFAULT_CONFIDENCE,
+)
 from dimer.core.factory import ConnectorFactory
 from dimer.core.models import ComparisonConfig, DiffAlgorithm, DiffRun, ConnectionConfig, TableMetadata
 
@@ -116,6 +124,10 @@ SUPPORTED_SOURCES: List[str] = [
     "bigquery",
     "databricks",
     "duckdb",
+    "cockroachdb",
+    "yugabyte",
+    "tidb",
+    "mongodb",
 ]
 
 REQUIRED_VARS: Dict[str, List[str]] = {
@@ -150,6 +162,28 @@ REQUIRED_VARS: Dict[str, List[str]] = {
     "duckdb": [
         "DUCKDB_DATABASE",
     ],
+    "cockroachdb": [
+        "COCKROACH_HOST",
+        "COCKROACH_USER",
+        "COCKROACH_PASSWORD",
+        "COCKROACH_DATABASE",
+    ],
+    "yugabyte": [
+        "YUGABYTE_HOST",
+        "YUGABYTE_USER",
+        "YUGABYTE_PASSWORD",
+        "YUGABYTE_DATABASE",
+    ],
+    "tidb": [
+        "TIDB_HOST",
+        "TIDB_USER",
+        "TIDB_PASSWORD",
+        "TIDB_DATABASE",
+    ],
+    "mongodb": [
+        "MONGODB_HOST",
+        "MONGODB_DATABASE",
+    ],
 }
 
 # Shown to the user when they are asked to enter the FQ table name
@@ -166,6 +200,13 @@ FQ_HINTS: Dict[str, str] = {
         "                          or   catalog.schema.table"
     ),
     "duckdb": "schema.table              e.g. main.orders",
+    "cockroachdb": "schema.table              e.g. public.orders",
+    "yugabyte": "schema.table              e.g. public.orders",
+    "tidb": "database.table            e.g. mydb.customers",
+    "mongodb": (
+        "collection                e.g. orders\n"
+        "                          or   database.collection"
+    ),
 }
 
 
@@ -235,6 +276,53 @@ def build_config(source_type: str) -> ConnectionConfig:
         return ConnectionConfig(
             host=os.getenv("DUCKDB_DATABASE", ":memory:"),
             schema_name=os.getenv("DUCKDB_SCHEMA", "main"),
+        )
+    if source_type == "cockroachdb":
+        return ConnectionConfig(
+            host=os.getenv("COCKROACH_HOST", "localhost"),
+            port=int(os.getenv("COCKROACH_PORT", "26257")),
+            username=os.getenv("COCKROACH_USER"),
+            password=os.getenv("COCKROACH_PASSWORD"),
+            database=os.getenv("COCKROACH_DATABASE"),
+            schema_name=os.getenv("COCKROACH_SCHEMA", "public"),
+            extra_params={
+                "ssl_mode": os.getenv("COCKROACH_SSL_MODE", "prefer"),
+            },
+        )
+    if source_type == "yugabyte":
+        return ConnectionConfig(
+            host=os.getenv("YUGABYTE_HOST", "localhost"),
+            port=int(os.getenv("YUGABYTE_PORT", "5433")),
+            username=os.getenv("YUGABYTE_USER"),
+            password=os.getenv("YUGABYTE_PASSWORD"),
+            database=os.getenv("YUGABYTE_DATABASE"),
+            schema_name=os.getenv("YUGABYTE_SCHEMA", "public"),
+            extra_params={
+                "ssl_mode": os.getenv("YUGABYTE_SSL_MODE", "prefer"),
+            },
+        )
+    if source_type == "tidb":
+        return ConnectionConfig(
+            host=os.getenv("TIDB_HOST", "localhost"),
+            port=int(os.getenv("TIDB_PORT", "4000")),
+            username=os.getenv("TIDB_USER"),
+            password=os.getenv("TIDB_PASSWORD"),
+            database=os.getenv("TIDB_DATABASE"),
+            extra_params={
+                "charset": os.getenv("TIDB_CHARSET", "utf8mb4"),
+            },
+        )
+    if source_type == "mongodb":
+        return ConnectionConfig(
+            host=os.getenv("MONGODB_HOST", "localhost"),
+            port=int(os.getenv("MONGODB_PORT", "27017")),
+            username=os.getenv("MONGODB_USER"),
+            password=os.getenv("MONGODB_PASSWORD"),
+            database=os.getenv("MONGODB_DATABASE"),
+            extra_params={
+                "uri": os.getenv("MONGODB_URI"),
+                "auth_source": os.getenv("MONGODB_AUTH_SOURCE", "admin"),
+            },
         )
     raise ValueError(f"Unknown source type: {source_type!r}")
 
@@ -440,6 +528,67 @@ def prompt_bisection(
     return True, bisection_key, threshold
 
 
+def prompt_embedding() -> "Tuple[bool, Optional[str], str, float]":
+    """Prompt the user about whether to use the EMBEDDING_SIMILARITY algorithm.
+
+    Intended for vector sources (e.g. pgvector columns) where float noise
+    between index builds makes row-hash equality meaningless.
+
+    Returns:
+        (use_embedding, vector_column, distance_metric, distance_threshold)
+    """
+    print(f"\n  {_bold('Embedding similarity')} {_dim('(vector columns, e.g. pgvector)')}")
+    print(f"  {_dim('Rows are MODIFIED when the vector distance exceeds a tolerance,')}")
+    print(f"  {_dim('instead of exact value equality.')}")
+
+    ans = input("  Compare an embedding/vector column? [y/N]: ").strip().lower()
+    if ans not in ("y", "yes"):
+        return False, None, EMBEDDING_DEFAULT_METRIC, EMBEDDING_DEFAULT_THRESHOLD
+
+    vector_column = ""
+    while not vector_column:
+        vector_column = input("  Vector column name: ").strip()
+        if not vector_column:
+            print(f"    {_red('Vector column is required for embedding similarity.')}")
+
+    raw_metric = input(f"  Distance metric (cosine / l2) [{_dim(EMBEDDING_DEFAULT_METRIC)}]: ").strip().lower()
+    metric = raw_metric if raw_metric in ("cosine", "l2") else EMBEDDING_DEFAULT_METRIC
+
+    raw_thresh = input(f"  Distance threshold [{_dim(str(EMBEDDING_DEFAULT_THRESHOLD))}]: ").strip()
+    try:
+        threshold = float(raw_thresh) if raw_thresh else EMBEDDING_DEFAULT_THRESHOLD
+    except ValueError:
+        threshold = EMBEDDING_DEFAULT_THRESHOLD
+
+    return True, vector_column, metric, threshold
+
+
+def prompt_bloom() -> "Tuple[bool, float]":
+    """Prompt the user about whether to run the BLOOM prefilter.
+
+    Returns:
+        (use_bloom, bloom_fpr)
+    """
+    print(f"\n  {_bold('Bloom prefilter')} {_dim('(cheap definitely-differs signal; not an exact diff)')}")
+    print(f"  {_dim('Fetches only keys + row hashes; reported differences are certain,')}")
+    print(f"  {_dim('but up to the false-positive rate of real differences may be missed.')}")
+
+    ans = input("  Run BLOOM prefilter instead of a full diff? [y/N]: ").strip().lower()
+    if ans not in ("y", "yes"):
+        return False, BLOOM_DEFAULT_FPR
+
+    raw_fpr = input(f"  Target false-positive rate [{_dim(str(BLOOM_DEFAULT_FPR))}]: ").strip()
+    try:
+        fpr = float(raw_fpr) if raw_fpr else BLOOM_DEFAULT_FPR
+        if not (0.0 < fpr < 1.0):
+            print(f"  {_yellow('⚠')}  FPR must be between 0 and 1; defaulting to {BLOOM_DEFAULT_FPR}.")
+            fpr = BLOOM_DEFAULT_FPR
+    except ValueError:
+        fpr = BLOOM_DEFAULT_FPR
+
+    return True, fpr
+
+
 def prompt_sampling() -> "Tuple[bool, int, float]":
     """Prompt the user about whether to use the SAMPLED algorithm.
 
@@ -500,6 +649,34 @@ def display_result(result: DiffRun) -> None:
         m = result.metadata
         print(f"  Segments       : {m.get('segment_count', '?')} initial, {m.get('segments_differing', '?')} differing")
         print(f"  Depth          : {m.get('depth_reached', '?')}")
+
+    if result.algorithm == DiffAlgorithm.BLOOM and result.metadata:
+        m = result.metadata
+        comparable = m.get('hash_comparable', False)
+        print(f"  Prefilter      : FPR={m.get('bloom_fpr', '?')}, "
+              f"{m.get('bloom_bits_per_side', '?'):,} bits/side, "
+              f"{m.get('bloom_hash_count', '?')} hash fns")
+        print(f"  Definite diffs : +{m.get('definite_added', 0):,} added, "
+              f"-{m.get('definite_deleted', 0):,} deleted, "
+              f"~{m.get('definite_modified', 0):,} modified")
+        if not comparable:
+            print(f"  {_yellow('⚠')}  Different source types — key membership only (MODIFIED not detectable)")
+        print(f"  {_yellow('⚠')}  Prefilter result: differences shown are certain; a clean result")
+        print(f"     may still hide up to ~{m.get('bloom_fpr', 0):.0%} of real diffs — verify with HASH_DIFF/BISECTION")
+
+    if result.algorithm == DiffAlgorithm.EMBEDDING_SIMILARITY and result.metadata:
+        m = result.metadata
+        print(f"  Vector column  : {m.get('vector_column', '?')}")
+        print(f"  Metric         : {m.get('distance_metric', '?')} (threshold {m.get('distance_threshold', '?')})")
+        print(f"  Compared pairs : {m.get('compared_pairs', 0):,}")
+        if m.get('mean_distance') is not None:
+            print(f"  Distance       : mean {m.get('mean_distance')}, max {m.get('max_distance')}")
+        if m.get('over_threshold'):
+            print(f"  Over threshold : {m.get('over_threshold'):,}")
+        if m.get('dimension_mismatches'):
+            print(f"  {_yellow('Dim mismatches')} : {m.get('dimension_mismatches'):,}")
+        if m.get('parse_failures'):
+            print(f"  {_yellow('Parse failures')} : {m.get('parse_failures'):,}")
 
     if result.algorithm == DiffAlgorithm.SAMPLED and result.metadata:
         m = result.metadata
@@ -759,14 +936,23 @@ def main() -> None:
 
             use_bisection = False
             use_sampling = False
+            use_bloom = False
+            bloom_fpr = BLOOM_DEFAULT_FPR
 
-            if not same_instance:
+            # Embedding similarity applies to vector columns regardless of topology
+            use_embedding, vector_column, embedding_metric, embedding_threshold = prompt_embedding()
 
-                use_bisection, bisection_key, bisection_threshold = prompt_bisection(fq1, fq2, keys1, meta1.row_count, meta2.row_count)
-                
+            if not use_embedding and not same_instance:
+
+                # Bloom prefilter: cheap signal before committing to a full diff
+                use_bloom, bloom_fpr = prompt_bloom()
+
+                if not use_bloom:
+                    use_bisection, bisection_key, bisection_threshold = prompt_bisection(fq1, fq2, keys1, meta1.row_count, meta2.row_count)
+
                 sample_size_val = SAMPLED_DEFAULT_SIZE
                 sample_confidence = SAMPLED_DEFAULT_CONFIDENCE
-                if not use_bisection:
+                if not use_bloom and not use_bisection:
                     # Sampling is only meaningful for cross-database comparisons
                     use_sampling, sample_size_val, sample_confidence = prompt_sampling()
 
@@ -776,7 +962,11 @@ def main() -> None:
             print(f"  Source  : {_cyan(src1):<20} {_bold(fq1)}")
             print(f"  Target  : {_cyan(src2):<20} {_bold(fq2)}")
             print(f"  Keys    : {', '.join(keys1)}  ←→  {', '.join(keys2)}")
-            if use_bisection:
+            if use_embedding:
+                print(f"  Algorithm: EMBEDDING_SIMILARITY  (column={vector_column}, metric={embedding_metric}, threshold={embedding_threshold})")
+            elif use_bloom:
+                print(f"  Algorithm: BLOOM prefilter  (fpr={bloom_fpr})")
+            elif use_bisection:
                 bkey_display = bisection_key or keys1[0]
                 print(f"  Algorithm: BISECTION  (key={bkey_display}, threshold={bisection_threshold})")
             elif use_sampling:
@@ -791,7 +981,15 @@ def main() -> None:
                 try:
                     db1: ComparisonConfig = {"fq_table_name": fq1, "keys": keys1}
                     db2: ComparisonConfig = {"fq_table_name": fq2, "keys": keys2}
-                    if use_bisection:
+                    if use_embedding:
+                        db1["use_embedding"] = True
+                        db1["vector_column"] = vector_column
+                        db1["distance_metric"] = embedding_metric
+                        db1["distance_threshold"] = embedding_threshold
+                    elif use_bloom:
+                        db1["use_bloom"] = True
+                        db1["bloom_fpr"] = bloom_fpr
+                    elif use_bisection:
                         db1["use_bisection"] = True
                         db1["bisection_threshold"] = bisection_threshold
                         if bisection_key:

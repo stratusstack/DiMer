@@ -11,6 +11,7 @@ from dimer.core.algorithms.base import (
     SAMPLED_DEFAULT_CONFIDENCE,
     SAMPLED_DEFAULT_SIZE,
     _get_col_value,
+    _supports_sql,
     _validate_identifier,
 )
 from dimer.core.models import DiffAlgorithm, DiffResult, DiffRun, RowStatus
@@ -131,14 +132,19 @@ class SampledAlgorithm(BaseAlgorithm):
         logger.info(f"Full source row count: {full_count_a:,}")
 
         # Sample rows from source using ORDER BY RANDOM()/RAND()
-        random_fn = self._left_connector.DIALECTS.get('random_func', 'RAND()')
-        cols_select_a = ", ".join(_validate_identifier(c, case_a) for c in common_columns)
-        sample_sql = (
-            f"SELECT {cols_select_a} FROM {safe_a} "
-            f"ORDER BY {random_fn} LIMIT {sample_size}"
-        )
         logger.info(f"Sampling {sample_size:,} rows from source")
-        sample_rows_a = self._query_rows(self._left_connector, sample_sql)
+        if _supports_sql(self._left_connector):
+            random_fn = self._left_connector.DIALECTS.get('random_func', 'RAND()')
+            cols_select_a = ", ".join(_validate_identifier(c, case_a) for c in common_columns)
+            sample_sql = (
+                f"SELECT {cols_select_a} FROM {safe_a} "
+                f"ORDER BY {random_fn} LIMIT {sample_size}"
+            )
+            sample_rows_a = self._query_rows(self._left_connector, sample_sql)
+        else:
+            sample_rows_a = self._left_connector.sample_rows(
+                table_a, common_columns, sample_size
+            )
         actual_sample = len(sample_rows_a)
         logger.info(f"Sampled {actual_sample:,} rows from source")
 
