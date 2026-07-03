@@ -15,6 +15,7 @@ from dimer.core.compare import (
     BLOOM_DEFAULT_FPR,
     EMBEDDING_DEFAULT_METRIC,
     EMBEDDING_DEFAULT_THRESHOLD,
+    PROFILE_DEFAULT_NUMERIC_TOLERANCE,
     SAMPLED_DEFAULT_SIZE,
     SAMPLED_DEFAULT_CONFIDENCE,
 )
@@ -553,6 +554,36 @@ def prompt_schema_diff() -> "Tuple[bool, bool]":
     return True, strict
 
 
+def prompt_profile_diff() -> "Tuple[bool, float]":
+    """Prompt the user about running a profile-only (aggregate stats) diff.
+
+    Compares per-column pushdown aggregates — count, nulls, distinct, min/max,
+    avg/sum — without reading row data. No join keys are needed.
+
+    Returns:
+        (use_profile_diff, numeric_tolerance)
+    """
+    print(f"\n  {_bold('Profile diff')} {_dim('(per-column aggregate stats; cheap triage signal)')}")
+    print(f"  {_dim('Compares count / nulls / distinct / min / max / avg / sum per column,')}")
+    print(f"  {_dim('one aggregation scan per side. Equal profiles do NOT prove equal rows.')}")
+
+    ans = input("  Compare column profiles only (no row data)? [y/N]: ").strip().lower()
+    if ans not in ("y", "yes"):
+        return False, PROFILE_DEFAULT_NUMERIC_TOLERANCE
+
+    raw_tol = input(
+        f"  Numeric tolerance (relative) [{_dim(str(PROFILE_DEFAULT_NUMERIC_TOLERANCE))}]: "
+    ).strip()
+    try:
+        tolerance = float(raw_tol) if raw_tol else PROFILE_DEFAULT_NUMERIC_TOLERANCE
+        if tolerance < 0:
+            tolerance = PROFILE_DEFAULT_NUMERIC_TOLERANCE
+    except ValueError:
+        tolerance = PROFILE_DEFAULT_NUMERIC_TOLERANCE
+
+    return True, tolerance
+
+
 def prompt_embedding() -> "Tuple[bool, Optional[str], str, float]":
     """Prompt the user about whether to use the EMBEDDING_SIMILARITY algorithm.
 
@@ -689,6 +720,18 @@ def display_result(result: DiffRun) -> None:
             fmt = lambda v: f"{v:,}" if isinstance(v, int) else "?"
             print(f"  Table rows     : source≈{fmt(rc_a)}  target≈{fmt(rc_b)}  {_dim('(catalog estimate)')}")
 
+    if result.algorithm == DiffAlgorithm.PROFILE_DIFF and result.metadata:
+        m = result.metadata
+        print(f"  Mode           : per-column aggregate profile, no row data read")
+        print(f"  Numeric tol.   : ±{m.get('numeric_tolerance', '?')} (relative)")
+        print(f"  Columns        : {m.get('columns_profiled', '?')} profiled")
+        rc_a = m.get('table_row_count_source')
+        rc_b = m.get('table_row_count_target')
+        if rc_a is not None or rc_b is not None:
+            fmt = lambda v: f"{v:,}" if isinstance(v, int) else "?"
+            print(f"  Table rows     : source={fmt(rc_a)}  target={fmt(rc_b)}")
+        print(f"  {_yellow('⚠')}  Triage signal only: equal profiles do NOT prove equal rows")
+
     if result.algorithm == DiffAlgorithm.BLOOM and result.metadata:
         m = result.metadata
         comparable = m.get('hash_comparable', False)
@@ -732,13 +775,18 @@ def display_result(result: DiffRun) -> None:
         print(f"  Est. total diffs: ~{est:,} rows (extrapolated)")
         print(f"  {_yellow('⚠')}  ADDED rows in target are not detected (source-perspective only)")
 
-    # Row count summary (SCHEMA_DIFF counts columns, not rows)
+    # Row count summary (SCHEMA_DIFF / PROFILE_DIFF count columns, not rows)
     s = result.summary
     if s is not None:
-        schema_mode = result.algorithm == DiffAlgorithm.SCHEMA_DIFF
-        unit_src = "Source columns" if schema_mode else "Source rows   "
-        unit_tgt = "Target columns" if schema_mode else "Target rows   "
-        modified_hint = "(attributes differ)" if schema_mode else "(values differ)"
+        column_mode = result.algorithm in (DiffAlgorithm.SCHEMA_DIFF, DiffAlgorithm.PROFILE_DIFF)
+        unit_src = "Source columns" if column_mode else "Source rows   "
+        unit_tgt = "Target columns" if column_mode else "Target rows   "
+        if result.algorithm == DiffAlgorithm.PROFILE_DIFF:
+            modified_hint = "(profile stats differ)"
+        elif column_mode:
+            modified_hint = "(attributes differ)"
+        else:
+            modified_hint = "(values differ)"
         print(f"  {unit_src} : {s.source_row_count:,}")
         print(f"  {unit_tgt} : {s.target_row_count:,}")
         if not result.match:
@@ -978,10 +1026,13 @@ def main() -> None:
             use_embedding = False
             bloom_fpr = BLOOM_DEFAULT_FPR
 
-            # Schema-only diff needs no join keys — offered before key detection
+            # Schema-only and profile-only diffs need no join keys — offered before key detection
             use_schema_diff, schema_strict = prompt_schema_diff()
+            use_profile_diff, profile_tolerance = (False, PROFILE_DEFAULT_NUMERIC_TOLERANCE)
+            if not use_schema_diff:
+                use_profile_diff, profile_tolerance = prompt_profile_diff()
 
-            if use_schema_diff:
+            if use_schema_diff or use_profile_diff:
                 keys1: List[str] = []
                 keys2: List[str] = []
             else:
@@ -993,7 +1044,7 @@ def main() -> None:
 
             same_instance = connector1.connection_config.host == connector2.connection_config.host and connector1.connection_config.database == connector2.connection_config.database
 
-            if not use_schema_diff and not use_embedding and not same_instance:
+            if not use_schema_diff and not use_profile_diff and not use_embedding and not same_instance:
 
                 # Bloom prefilter: cheap signal before committing to a full diff
                 use_bloom, bloom_fpr = prompt_bloom()
@@ -1012,12 +1063,14 @@ def main() -> None:
             print("  " + "─" * 54)
             print(f"  Source  : {_cyan(src1):<20} {_bold(fq1)}")
             print(f"  Target  : {_cyan(src2):<20} {_bold(fq2)}")
-            if use_schema_diff:
-                print(f"  Keys    : {_dim('— (not needed for schema diff)')}")
+            if use_schema_diff or use_profile_diff:
+                print(f"  Keys    : {_dim('— (not needed for this algorithm)')}")
             else:
                 print(f"  Keys    : {', '.join(keys1)}  ←→  {', '.join(keys2)}")
             if use_schema_diff:
                 print(f"  Algorithm: SCHEMA_DIFF  (structure only{', strict' if schema_strict else ''}; no data read)")
+            elif use_profile_diff:
+                print(f"  Algorithm: PROFILE_DIFF  (numeric tolerance={profile_tolerance}; no row data read)")
             elif use_embedding:
                 print(f"  Algorithm: EMBEDDING_SIMILARITY  (column={vector_column}, metric={embedding_metric}, threshold={embedding_threshold})")
             elif use_bloom:
@@ -1040,6 +1093,9 @@ def main() -> None:
                     if use_schema_diff:
                         db1["use_schema_diff"] = True
                         db1["schema_strict"] = schema_strict
+                    elif use_profile_diff:
+                        db1["use_profile_diff"] = True
+                        db1["profile_numeric_tolerance"] = profile_tolerance
                     elif use_embedding:
                         db1["use_embedding"] = True
                         db1["vector_column"] = vector_column

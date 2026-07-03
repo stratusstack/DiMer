@@ -50,6 +50,7 @@ class DiffAlgorithm(str, Enum):
     BLOOM = "BLOOM"                 # Bloom-filter prefilter; cheap "definitely differs" signal; explicit opt-in
     EMBEDDING_SIMILARITY = "EMBEDDING_SIMILARITY"  # per-id vector distance diff; explicit opt-in
     SCHEMA_DIFF = "SCHEMA_DIFF"     # catalog/metadata structure compare; no data read; explicit opt-in
+    PROFILE_DIFF = "PROFILE_DIFF"   # per-column aggregate stats compare (pushdown); explicit opt-in
 
 
 class RowStatus(Enum):
@@ -217,6 +218,22 @@ class SchemaDiffConfig(ComparisonConfig, total=False):
 
     use_schema_diff: bool  # explicit opt-in flag
     schema_strict: bool    # also compare max_length / precision / scale (default: False)
+
+
+class ProfileDiffConfig(ComparisonConfig, total=False):
+    """Extends ComparisonConfig with optional profile-diff parameters.
+
+    PROFILE_DIFF compares per-column aggregates (count, null count, distinct
+    count, min/max, avg/sum for numeric columns) computed pushdown — one
+    aggregation scan per side, no row data leaves the database.  It is a
+    cheap triage signal: equal profiles do not prove equal rows, but
+    differing profiles prove the tables differ.  ``keys`` may be an empty
+    list; no join keys are needed.
+    """
+
+    use_profile_diff: bool         # explicit opt-in flag
+    profile_columns: List[str]     # subset of common columns to profile (default: all)
+    profile_numeric_tolerance: float  # relative tolerance for numeric stat comparison (default: 1e-6)
 
 
 # ---------------------------------------------------------------------------
