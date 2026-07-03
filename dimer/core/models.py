@@ -49,6 +49,7 @@ class DiffAlgorithm(str, Enum):
     SAMPLED = "SAMPLED"             # statistical sampling; cross-database only; explicit opt-in
     BLOOM = "BLOOM"                 # Bloom-filter prefilter; cheap "definitely differs" signal; explicit opt-in
     EMBEDDING_SIMILARITY = "EMBEDDING_SIMILARITY"  # per-id vector distance diff; explicit opt-in
+    SCHEMA_DIFF = "SCHEMA_DIFF"     # catalog/metadata structure compare; no data read; explicit opt-in
 
 
 class RowStatus(Enum):
@@ -203,6 +204,19 @@ class EmbeddingConfig(ComparisonConfig, total=False):
     vector_column: str        # column holding the embedding (required at runtime)
     distance_metric: str      # 'cosine' (default) or 'l2'
     distance_threshold: float # max tolerated distance before MODIFIED (default: 1e-3)
+
+
+class SchemaDiffConfig(ComparisonConfig, total=False):
+    """Extends ComparisonConfig with optional schema-diff parameters.
+
+    SCHEMA_DIFF compares table *structure* from catalog metadata — column
+    sets, data types (normalised via ``DataTypeMapper``), nullability, and
+    primary keys — without reading any data rows.  ``keys`` may be an empty
+    list; join keys are irrelevant to a structure compare.
+    """
+
+    use_schema_diff: bool  # explicit opt-in flag
+    schema_strict: bool    # also compare max_length / precision / scale (default: False)
 
 
 # ---------------------------------------------------------------------------

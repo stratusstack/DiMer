@@ -16,6 +16,7 @@ from dimer.core.algorithms import (
     HashDiffAlgorithm,
     JoinDiffAlgorithm,
     SampledAlgorithm,
+    SchemaDiffAlgorithm,
 )
 from dimer.core.algorithms.base import (
     BISECTION_DEFAULT_SEGMENTS,
@@ -121,6 +122,11 @@ class Diffcheck:
         """Choose the appropriate comparison strategy and run the diff."""
         logger.info("Starting table comparison")
 
+        # Schema-only diff is an explicit opt-in (no data read; UC2)
+        if self._left_config.get('use_schema_diff') or self._right_config.get('use_schema_diff'):
+            logger.info("Schema-diff algorithm selected — catalog metadata compare only")
+            return self._make_algorithm(SchemaDiffAlgorithm).run()
+
         # Embedding similarity is an explicit opt-in (vector sources)
         if self._left_config.get('use_embedding') or self._right_config.get('use_embedding'):
             logger.info("Embedding-similarity algorithm selected — per-id vector distance")
@@ -160,6 +166,14 @@ class Diffcheck:
             logger.info("Different database instances — using hash-diff comparison")
             return self._make_algorithm(HashDiffAlgorithm).run()
 
+    def compare_schema_only(self) -> DiffRun:
+        """Run the SCHEMA_DIFF algorithm directly (UC2 — structure compare).
+
+        Compares catalog metadata only; no data rows are read.  Also selected
+        automatically by ``compare()`` when ``use_schema_diff=True``.
+        """
+        return self._make_algorithm(SchemaDiffAlgorithm).run()
+
     def compare_cross_database(self) -> DiffRun:
         """Compare tables using the full in-memory FULL_FETCH_DIFF algorithm.
 
@@ -173,29 +187,34 @@ class Diffcheck:
     # ------------------------------------------------------------------
 
     def check_schema(self, table_a: str, table_b: str) -> bool:
-        """Detailed schema comparison between two tables. Returns True if schemas match."""
+        """Detailed schema comparison between two tables. Returns True if schemas match.
+
+        Thin wrapper over the SCHEMA_DIFF algorithm, kept for backward
+        compatibility.  Note: like the original implementation, only column
+        *presence* determines the boolean result; attribute drift on common
+        columns is logged but does not fail the check.  Use
+        ``compare_schema_only()`` for the full structural verdict.
+        """
         logger.info("Starting detailed schema comparison")
 
-        algo = self._make_algorithm(HashDiffAlgorithm)
-        metadata_a = algo.get_schema_metadata(self._left_connector, table_a)
-        metadata_b = algo.get_schema_metadata(self._right_connector, table_b)
+        result = SchemaDiffAlgorithm(
+            self._left_connector,
+            self._right_connector,
+            {"fq_table_name": table_a, "keys": []},
+            {"fq_table_name": table_b, "keys": []},
+        ).run()
 
-        if metadata_a is None or metadata_b is None:
-            logger.error("Could not retrieve metadata for schema comparison")
+        if result.error:
+            logger.error(f"Could not retrieve metadata for schema comparison: {result.error}")
             return False
 
-        differences = algo.compare_schemas(metadata_a, metadata_b)
-        logger.info(f"Table A ({table_a}): {len(metadata_a.columns)} columns, {metadata_a.row_count} rows")
-        logger.info(f"Table B ({table_b}): {len(metadata_b.columns)} columns, {metadata_b.row_count} rows")
-
-        if differences['columns_only_in_a']:
+        differences = result.schema_differences or {}
+        if differences.get('columns_only_in_a'):
             logger.info(f"Columns only in A: {differences['columns_only_in_a']}")
-        if differences['columns_only_in_b']:
+        if differences.get('columns_only_in_b'):
             logger.info(f"Columns only in B: {differences['columns_only_in_b']}")
-        if differences['column_type_differences']:
+        if differences.get('column_type_differences'):
             logger.info(f"Type differences: {differences['column_type_differences']}")
 
-        return (
-            len(differences['columns_only_in_a']) == 0
-            and len(differences['columns_only_in_b']) == 0
-        )
+        s = result.summary
+        return s is not None and s.added_count == 0 and s.deleted_count == 0

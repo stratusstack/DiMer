@@ -1,6 +1,6 @@
 # DiMer Diff Algorithms
 
-DiMer implements seven diff algorithms. Three are selected automatically based on context; four require explicit opt-in.
+DiMer implements eight diff algorithms. Three are selected automatically based on context; five require explicit opt-in.
 
 | Algorithm       | Selected when                              | Key characteristic                                      |
 | --------------- | ------------------------------------------ | ------------------------------------------------------- |
@@ -11,10 +11,15 @@ DiMer implements seven diff algorithms. Three are selected automatically based o
 | `SAMPLED`       | Explicit opt-in; cross-DB only             | Statistical sample — estimates diff rate with Wilson CI |
 | `BLOOM`         | Explicit opt-in                            | Prefilter — cheap "definitely differs" signal; no Phase 2 fetch |
 | `EMBEDDING_SIMILARITY` | Explicit opt-in                     | Vector diff — same id, distance beyond tolerance = MODIFIED |
+| `SCHEMA_DIFF`   | Explicit opt-in                            | Structure compare from catalog metadata — no data read |
 
 ## Algorithm selection guide
 
 ```
+use_schema_diff=True?  (structure only; UC2)
+  └── Yes  →  SCHEMA_DIFF  (catalog metadata compare; no data read, no keys needed)
+  └── No
+        ↓
 use_embedding=True?  (vector columns, e.g. pgvector)
   └── Yes  →  EMBEDDING_SIMILARITY  (per-id vector distance vs tolerance)
   └── No
@@ -43,6 +48,7 @@ use_embedding=True?  (vector columns, e.g. pgvector)
 | Cross-DB, extremely large tables, probabilistic answer OK | `SAMPLED` (set `use_sampling=True`; does not detect ADDED rows) |
 | Quick "is a full diff even worth running?" check | `BLOOM` (set `use_bloom=True`; reports only certain differences) |
 | Vector/embedding columns (pgvector, vector stores) | `EMBEDDING_SIMILARITY` (set `use_embedding=True` + `vector_column`) |
+| CI/CD gate before a data diff; detecting silent type drift | `SCHEMA_DIFF` (set `use_schema_diff=True`; near-zero cost, no keys needed) |
 | Debugging / verifying HASH_DIFF results | `FULL_FETCH_DIFF` (call `compare_cross_database()` directly) |
 
 
@@ -660,6 +666,96 @@ primitives as MongoDB and are still planned.
 - Non-vector data (use the standard algorithms)
 - When exact float equality matters (set the threshold to 0 — but HASH_DIFF
   is then usually cheaper, since it pushes hashing down to the database)
+
+---
+
+## SCHEMA_DIFF
+
+**File:** `dimer/core/algorithms/schema_diff.py` → `SchemaDiffAlgorithm`
+
+**Used when:** `use_schema_diff=True` is set in the config, or by calling
+`Diffcheck.compare_schema_only()` directly. The CLI offers it right after the
+table names are entered — join keys are never prompted for, because a
+structure compare does not need them (`keys` may be `[]`).
+
+### Core idea
+
+UC2: compare table *structure* from catalog metadata — column sets, data
+types, nullability, and primary keys — **without reading a single data row**.
+This is the CI/CD gate: run it before a data diff to catch silent type or
+precision drift, dropped columns, or primary-key changes at near-zero cost.
+
+Both sides are read through the connector's existing `get_table_metadata()`:
+
+| Source family | Catalog source |
+|---|---|
+| REL (PostgreSQL, MySQL) | `information_schema.columns` + key constraints |
+| DWH (Snowflake, BigQuery, Databricks, DuckDB) | native catalog / information schema |
+| NSQL (CockroachDB, TiDB, Yugabyte) | inherited from the PostgreSQL / MySQL connectors |
+| DOC (MongoDB) | works incidentally via sampled schema inference (see caveat) |
+
+### What is compared
+
+Column names are matched **case-insensitively** (identifier-case differences
+across engines are not structural drift). Data types are compared after
+`DataTypeMapper` normalisation, so PostgreSQL `character varying` equals
+Snowflake `VARCHAR`.
+
+| Attribute | Compared | Notes |
+|---|---|---|
+| column presence | always | ADDED / DELETED per column |
+| `data_type` | always | common-type normalised |
+| `nullable` | always | |
+| `is_primary_key` | always | plus whole-PK set comparison in metadata |
+| `max_length`, `precision`, `scale` | only with `schema_strict=True` | noisy across engines (e.g. Snowflake NUMBER defaults to precision 38) |
+
+Row-count drift is surfaced in `metadata` (from catalog statistics) but never
+affects `match` — it is not structural.
+
+### Configuration
+
+| Key | Default | Meaning |
+|---|---|---|
+| `use_schema_diff` | — | explicit opt-in |
+| `schema_strict` | `False` | also compare max_length / precision / scale |
+
+### Result semantics
+
+Each differing **column** becomes one `DiffRow` (`key_values = {"column":
+name}`), so persistence and the CLI detail display work unchanged:
+
+- `DELETED` — column exists only in the source
+- `ADDED` — column exists only in the target
+- `MODIFIED` — attribute drift; `mismatched_columns` lists the differing
+  *attribute names* and `source_values` / `target_values` hold each side's
+  attribute dict
+
+`DiffRun.summary` counts are over **columns**, not rows.
+`DiffRun.metadata`: `strict`, `columns_source`, `columns_target`,
+`columns_common`, `primary_key_source`, `primary_key_target`,
+`primary_key_match`, `table_row_count_source`, `table_row_count_target`.
+
+The legacy `Diffcheck.check_schema(table_a, table_b) -> bool` is now a thin
+wrapper over this algorithm (presence-only verdict, unchanged behavior).
+
+### Data transferred
+
+Catalog metadata only — a handful of information-schema rows per side. No
+data pages are touched.
+
+### When it excels
+
+- CI/CD gating: fail fast before spending compute on a row-level diff
+- Detecting silent type/precision drift after migrations or dbt runs
+- Cross-engine migration validation (common-type mapping absorbs dialect noise)
+
+### When not to use it
+
+- Equal schemas say nothing about equal *data* — follow up with HASH_DIFF /
+  JOIN_DIFF / BISECTION
+- Document stores: MongoDB metadata is inferred from a 100-document sample,
+  so absent/rare fields may be missed — treat DOC schema diffs as indicative,
+  not exact
 
 ---
 

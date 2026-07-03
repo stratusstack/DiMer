@@ -528,6 +528,31 @@ def prompt_bisection(
     return True, bisection_key, threshold
 
 
+def prompt_schema_diff() -> "Tuple[bool, bool]":
+    """Prompt the user about running a schema-only (structure) diff.
+
+    Compares catalog metadata — column sets, types, nullability, primary
+    keys — without reading any data rows.  No join keys are needed.
+
+    Returns:
+        (use_schema_diff, schema_strict)
+    """
+    print(f"\n  {_bold('Schema-only diff')} {_dim('(structure compare; no data read)')}")
+    print(f"  {_dim('Compares column sets, types, nullability and primary keys')}")
+    print(f"  {_dim('from catalog metadata. Useful as a CI/CD gate before a data diff.')}")
+
+    ans = input("  Compare schemas only (no data)? [y/N]: ").strip().lower()
+    if ans not in ("y", "yes"):
+        return False, False
+
+    strict = input(
+        "  Strict mode — also compare length/precision/scale? "
+        f"{_dim('(noisy across engines)')} [y/N]: "
+    ).strip().lower() in ("y", "yes")
+
+    return True, strict
+
+
 def prompt_embedding() -> "Tuple[bool, Optional[str], str, float]":
     """Prompt the user about whether to use the EMBEDDING_SIMILARITY algorithm.
 
@@ -650,6 +675,20 @@ def display_result(result: DiffRun) -> None:
         print(f"  Segments       : {m.get('segment_count', '?')} initial, {m.get('segments_differing', '?')} differing")
         print(f"  Depth          : {m.get('depth_reached', '?')}")
 
+    if result.algorithm == DiffAlgorithm.SCHEMA_DIFF and result.metadata:
+        m = result.metadata
+        print(f"  Mode           : structure only, no data read"
+              f"{' (strict: length/precision/scale compared)' if m.get('strict') else ''}")
+        pk_a = m.get('primary_key_source') or []
+        pk_b = m.get('primary_key_target') or []
+        pk_flag = _green('✓') if m.get('primary_key_match') else _red('✗')
+        print(f"  Primary keys   : {pk_flag}  source=({', '.join(pk_a) or '—'})  target=({', '.join(pk_b) or '—'})")
+        rc_a = m.get('table_row_count_source')
+        rc_b = m.get('table_row_count_target')
+        if rc_a is not None or rc_b is not None:
+            fmt = lambda v: f"{v:,}" if isinstance(v, int) else "?"
+            print(f"  Table rows     : source≈{fmt(rc_a)}  target≈{fmt(rc_b)}  {_dim('(catalog estimate)')}")
+
     if result.algorithm == DiffAlgorithm.BLOOM and result.metadata:
         m = result.metadata
         comparable = m.get('hash_comparable', False)
@@ -693,18 +732,22 @@ def display_result(result: DiffRun) -> None:
         print(f"  Est. total diffs: ~{est:,} rows (extrapolated)")
         print(f"  {_yellow('⚠')}  ADDED rows in target are not detected (source-perspective only)")
 
-    # Row count summary
+    # Row count summary (SCHEMA_DIFF counts columns, not rows)
     s = result.summary
     if s is not None:
-        print(f"  Source rows    : {s.source_row_count:,}")
-        print(f"  Target rows    : {s.target_row_count:,}")
+        schema_mode = result.algorithm == DiffAlgorithm.SCHEMA_DIFF
+        unit_src = "Source columns" if schema_mode else "Source rows   "
+        unit_tgt = "Target columns" if schema_mode else "Target rows   "
+        modified_hint = "(attributes differ)" if schema_mode else "(values differ)"
+        print(f"  {unit_src} : {s.source_row_count:,}")
+        print(f"  {unit_tgt} : {s.target_row_count:,}")
         if not result.match:
             if s.added_count:
                 print(f"  {_green('Added')}          : {s.added_count:,}  (in target, not in source)")
             if s.deleted_count:
                 print(f"  {_red('Deleted')}        : {s.deleted_count:,}  (in source, not in target)")
             if s.modified_count:
-                print(f"  {_yellow('Modified')}       : {s.modified_count:,}  (values differ)")
+                print(f"  {_yellow('Modified')}       : {s.modified_count:,}  {modified_hint}")
             print(f"  Matched        : {s.matched_count:,}")
 
     if result.common_columns:
@@ -929,20 +972,28 @@ def main() -> None:
             fq1 = prompt_fq_table(src1, "Target 1")
             fq2 = prompt_fq_table(src2, "Target 2")
 
-            keys1, meta1 = detect_or_prompt_keys(connector1, fq1, "Target 1")
-            keys2, meta2 = detect_or_prompt_keys(connector2, fq2, "Target 2")
-
-            same_instance = connector1.connection_config.host == connector2.connection_config.host and connector1.connection_config.database == connector2.connection_config.database
-
             use_bisection = False
             use_sampling = False
             use_bloom = False
+            use_embedding = False
             bloom_fpr = BLOOM_DEFAULT_FPR
 
-            # Embedding similarity applies to vector columns regardless of topology
-            use_embedding, vector_column, embedding_metric, embedding_threshold = prompt_embedding()
+            # Schema-only diff needs no join keys — offered before key detection
+            use_schema_diff, schema_strict = prompt_schema_diff()
 
-            if not use_embedding and not same_instance:
+            if use_schema_diff:
+                keys1: List[str] = []
+                keys2: List[str] = []
+            else:
+                keys1, meta1 = detect_or_prompt_keys(connector1, fq1, "Target 1")
+                keys2, meta2 = detect_or_prompt_keys(connector2, fq2, "Target 2")
+
+                # Embedding similarity applies to vector columns regardless of topology
+                use_embedding, vector_column, embedding_metric, embedding_threshold = prompt_embedding()
+
+            same_instance = connector1.connection_config.host == connector2.connection_config.host and connector1.connection_config.database == connector2.connection_config.database
+
+            if not use_schema_diff and not use_embedding and not same_instance:
 
                 # Bloom prefilter: cheap signal before committing to a full diff
                 use_bloom, bloom_fpr = prompt_bloom()
@@ -961,8 +1012,13 @@ def main() -> None:
             print("  " + "─" * 54)
             print(f"  Source  : {_cyan(src1):<20} {_bold(fq1)}")
             print(f"  Target  : {_cyan(src2):<20} {_bold(fq2)}")
-            print(f"  Keys    : {', '.join(keys1)}  ←→  {', '.join(keys2)}")
-            if use_embedding:
+            if use_schema_diff:
+                print(f"  Keys    : {_dim('— (not needed for schema diff)')}")
+            else:
+                print(f"  Keys    : {', '.join(keys1)}  ←→  {', '.join(keys2)}")
+            if use_schema_diff:
+                print(f"  Algorithm: SCHEMA_DIFF  (structure only{', strict' if schema_strict else ''}; no data read)")
+            elif use_embedding:
                 print(f"  Algorithm: EMBEDDING_SIMILARITY  (column={vector_column}, metric={embedding_metric}, threshold={embedding_threshold})")
             elif use_bloom:
                 print(f"  Algorithm: BLOOM prefilter  (fpr={bloom_fpr})")
@@ -981,7 +1037,10 @@ def main() -> None:
                 try:
                     db1: ComparisonConfig = {"fq_table_name": fq1, "keys": keys1}
                     db2: ComparisonConfig = {"fq_table_name": fq2, "keys": keys2}
-                    if use_embedding:
+                    if use_schema_diff:
+                        db1["use_schema_diff"] = True
+                        db1["schema_strict"] = schema_strict
+                    elif use_embedding:
                         db1["use_embedding"] = True
                         db1["vector_column"] = vector_column
                         db1["distance_metric"] = embedding_metric

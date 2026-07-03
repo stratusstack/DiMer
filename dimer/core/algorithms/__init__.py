@@ -8,6 +8,7 @@ from dimer.core.algorithms.embedding import EmbeddingSimilarityAlgorithm
 from dimer.core.algorithms.hash_diff import HashDiffAlgorithm
 from dimer.core.algorithms.join_diff import JoinDiffAlgorithm
 from dimer.core.algorithms.sampled import SampledAlgorithm
+from dimer.core.algorithms.schema_diff import SchemaDiffAlgorithm
 
 __all__ = [
     "BaseAlgorithm",
@@ -19,4 +20,5 @@ __all__ = [
     "HashDiffAlgorithm",
     "JoinDiffAlgorithm",
     "SampledAlgorithm",
+    "SchemaDiffAlgorithm",
 ]
