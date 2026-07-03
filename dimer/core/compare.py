@@ -18,6 +18,7 @@ from dimer.core.algorithms import (
     ProfileDiffAlgorithm,
     SampledAlgorithm,
     SchemaDiffAlgorithm,
+    SketchDiffAlgorithm,
 )
 from dimer.core.algorithms.base import (
     BISECTION_DEFAULT_SEGMENTS,
@@ -30,6 +31,7 @@ from dimer.core.algorithms.base import (
     PROFILE_DEFAULT_NUMERIC_TOLERANCE,
     SAMPLED_DEFAULT_CONFIDENCE,
     SAMPLED_DEFAULT_SIZE,
+    SKETCH_DEFAULT_RELATIVE_TOLERANCE,
     BaseAlgorithm,
     _supports_sql,
 )
@@ -49,6 +51,7 @@ __all__ = [
     "EMBEDDING_DEFAULT_METRIC",
     "EMBEDDING_DEFAULT_THRESHOLD",
     "PROFILE_DEFAULT_NUMERIC_TOLERANCE",
+    "SKETCH_DEFAULT_RELATIVE_TOLERANCE",
 ]
 
 
@@ -135,6 +138,11 @@ class Diffcheck:
             logger.info("Profile-diff algorithm selected — per-column aggregate compare")
             return self._make_algorithm(ProfileDiffAlgorithm).run()
 
+        # Sketch diff is an explicit opt-in (approximate cardinality/median compare; UC3)
+        if self._left_config.get('use_sketch_diff') or self._right_config.get('use_sketch_diff'):
+            logger.info("Sketch-diff algorithm selected — approximate cardinality/median compare")
+            return self._make_algorithm(SketchDiffAlgorithm).run()
+
         # Embedding similarity is an explicit opt-in (vector sources)
         if self._left_config.get('use_embedding') or self._right_config.get('use_embedding'):
             logger.info("Embedding-similarity algorithm selected — per-id vector distance")
@@ -190,6 +198,16 @@ class Diffcheck:
         selected automatically by ``compare()`` when ``use_profile_diff=True``.
         """
         return self._make_algorithm(ProfileDiffAlgorithm).run()
+
+    def compare_sketch_only(self) -> DiffRun:
+        """Run the SKETCH_DIFF algorithm directly (UC3 — approximate cardinality/median compare).
+
+        Compares approximate per-column cardinality and median using each
+        connector's native sketch function where available (falls back to
+        exact equivalents otherwise); no row data leaves the database. Also
+        selected automatically by ``compare()`` when ``use_sketch_diff=True``.
+        """
+        return self._make_algorithm(SketchDiffAlgorithm).run()
 
     def compare_cross_database(self) -> DiffRun:
         """Compare tables using the full in-memory FULL_FETCH_DIFF algorithm.

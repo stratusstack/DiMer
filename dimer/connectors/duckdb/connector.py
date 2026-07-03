@@ -45,6 +45,14 @@ class DuckDBConnector(DataSourceConnector):
         "aggregate_hash": "bit_xor(hash({COL}))",
         "random_func": "random()",
     }
+    # SKETCH_DIFF (UC3): approx_count_distinct is HyperLogLog;
+    # approx_quantile is t-Digest. See ALGO.md §SKETCH_DIFF for sources.
+    SKETCH_FUNCS = {
+        "distinct": "approx_count_distinct({COL})",
+        "distinct_algorithm": "HyperLogLog",
+        "median": "approx_quantile({COL}, 0.5)",
+        "median_algorithm": "t-Digest",
+    }
 
     def get_required_params(self) -> List[str]:
         """DuckDB only needs the file path / ':memory:' in ``host``."""

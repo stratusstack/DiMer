@@ -51,6 +51,7 @@ class DiffAlgorithm(str, Enum):
     EMBEDDING_SIMILARITY = "EMBEDDING_SIMILARITY"  # per-id vector distance diff; explicit opt-in
     SCHEMA_DIFF = "SCHEMA_DIFF"     # catalog/metadata structure compare; no data read; explicit opt-in
     PROFILE_DIFF = "PROFILE_DIFF"   # per-column aggregate stats compare (pushdown); explicit opt-in
+    SKETCH_DIFF = "SKETCH_DIFF"     # approximate cardinality (HLL) + approximate median compare; explicit opt-in
 
 
 class RowStatus(Enum):
@@ -234,6 +235,29 @@ class ProfileDiffConfig(ComparisonConfig, total=False):
     use_profile_diff: bool         # explicit opt-in flag
     profile_columns: List[str]     # subset of common columns to profile (default: all)
     profile_numeric_tolerance: float  # relative tolerance for numeric stat comparison (default: 1e-6)
+
+
+class SketchDiffConfig(ComparisonConfig, total=False):
+    """Extends ComparisonConfig with optional sketch-diff parameters.
+
+    SKETCH_DIFF compares *approximate* per-column cardinality (distinct
+    count) and median, using each connector's native probabilistic sketch
+    function where one exists (e.g. Snowflake/BigQuery/Databricks/DuckDB use
+    HyperLogLog-family cardinality estimators; see ``ALGO.md`` §SKETCH_DIFF
+    for the full per-engine algorithm matrix, researched from each vendor's
+    documentation). Engines without a native sketch fall back to the exact
+    equivalent (``COUNT(DISTINCT)`` / ``PERCENTILE_CONT``), which is still
+    pushdown-only and non-approximate for that column.
+
+    Because it mixes genuinely approximate estimates (a few % error by
+    design) with occasional exact fallbacks, comparisons use a looser
+    relative tolerance than ``PROFILE_DIFF``. ``keys`` may be an empty list;
+    no join keys are needed.
+    """
+
+    use_sketch_diff: bool           # explicit opt-in flag
+    sketch_columns: List[str]       # subset of common columns to profile (default: all)
+    sketch_relative_tolerance: float  # relative tolerance for estimate comparison (default: 0.05)
 
 
 # ---------------------------------------------------------------------------

@@ -31,6 +31,15 @@ class BigQueryConnector(DataSourceConnector):
         "aggregate_hash": "BIT_XOR(FARM_FINGERPRINT({COL}))",
         "random_func": "RAND()",
     }
+    # SKETCH_DIFF (UC3): APPROX_COUNT_DISTINCT is HyperLogLog++.
+    # APPROX_QUANTILES(x, 2) returns [min, median, max]; OFFSET(1) selects
+    # the median. See ALGO.md §SKETCH_DIFF for sources.
+    SKETCH_FUNCS = {
+        "distinct": "APPROX_COUNT_DISTINCT({COL})",
+        "distinct_algorithm": "HyperLogLog++",
+        "median": "APPROX_QUANTILES({COL}, 2)[OFFSET(1)]",
+        "median_algorithm": "quantile summary (undocumented internal algorithm)",
+    }
 
     def get_required_params(self) -> List[str]:
         """Return list of required connection parameters for BigQuery."""

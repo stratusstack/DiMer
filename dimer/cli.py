@@ -18,6 +18,7 @@ from dimer.core.compare import (
     PROFILE_DEFAULT_NUMERIC_TOLERANCE,
     SAMPLED_DEFAULT_SIZE,
     SAMPLED_DEFAULT_CONFIDENCE,
+    SKETCH_DEFAULT_RELATIVE_TOLERANCE,
 )
 from dimer.core.factory import ConnectorFactory
 from dimer.core.models import ComparisonConfig, DiffAlgorithm, DiffRun, ConnectionConfig, TableMetadata
@@ -554,34 +555,54 @@ def prompt_schema_diff() -> "Tuple[bool, bool]":
     return True, strict
 
 
-def prompt_profile_diff() -> "Tuple[bool, float]":
-    """Prompt the user about running a profile-only (aggregate stats) diff.
+def prompt_aggregate_diff() -> "Tuple[bool, bool, float]":
+    """Prompt the user to choose between PROFILE_DIFF, SKETCH_DIFF, or neither.
 
-    Compares per-column pushdown aggregates — count, nulls, distinct, min/max,
-    avg/sum — without reading row data. No join keys are needed.
+    Both algorithms compare per-column aggregates instead of row data (no
+    join keys needed) — the choice is exact-but-heavier vs. approximate-
+    but-cheap-at-scale.
 
     Returns:
-        (use_profile_diff, numeric_tolerance)
+        (use_profile_diff, use_sketch_diff, tolerance) — tolerance is
+        PROFILE_DEFAULT_NUMERIC_TOLERANCE / SKETCH_DEFAULT_RELATIVE_TOLERANCE
+        for whichever mode was chosen (unused for the other).
     """
-    print(f"\n  {_bold('Profile diff')} {_dim('(per-column aggregate stats; cheap triage signal)')}")
-    print(f"  {_dim('Compares count / nulls / distinct / min / max / avg / sum per column,')}")
-    print(f"  {_dim('one aggregation scan per side. Equal profiles do NOT prove equal rows.')}")
+    print(f"\n  {_bold('Aggregate diff')} {_dim('(per-column stats instead of row data; cheap triage)')}")
+    print(f"    {_cyan('1')}. {_bold('PROFILE_DIFF')}  {_dim('— exact count/nulls/distinct/min/max/avg/sum per column')}")
+    print(f"    {_cyan('2')}. {_bold('SKETCH_DIFF')}   {_dim('— approximate cardinality (HLL-family) + approximate median; cheaper at huge scale')}")
+    print(f"    {_cyan('3')}. {_dim('Skip — use a row-level diff instead')}")
 
-    ans = input("  Compare column profiles only (no row data)? [y/N]: ").strip().lower()
-    if ans not in ("y", "yes"):
-        return False, PROFILE_DEFAULT_NUMERIC_TOLERANCE
+    raw = input("  Enter number (1-3) [3]: ").strip()
 
-    raw_tol = input(
-        f"  Numeric tolerance (relative) [{_dim(str(PROFILE_DEFAULT_NUMERIC_TOLERANCE))}]: "
-    ).strip()
-    try:
-        tolerance = float(raw_tol) if raw_tol else PROFILE_DEFAULT_NUMERIC_TOLERANCE
-        if tolerance < 0:
+    if raw == "1":
+        print(f"  {_dim('Equal profiles do NOT prove equal rows — this is a triage signal.')}")
+        raw_tol = input(
+            f"  Numeric tolerance (relative) [{_dim(str(PROFILE_DEFAULT_NUMERIC_TOLERANCE))}]: "
+        ).strip()
+        try:
+            tolerance = float(raw_tol) if raw_tol else PROFILE_DEFAULT_NUMERIC_TOLERANCE
+            if tolerance < 0:
+                tolerance = PROFILE_DEFAULT_NUMERIC_TOLERANCE
+        except ValueError:
             tolerance = PROFILE_DEFAULT_NUMERIC_TOLERANCE
-    except ValueError:
-        tolerance = PROFILE_DEFAULT_NUMERIC_TOLERANCE
+        return True, False, tolerance
 
-    return True, tolerance
+    if raw == "2":
+        print(f"  {_dim('Uses each engine native sketch function where available')}")
+        print(f"  {_dim('(HyperLogLog-family / t-Digest / Greenwald-Khanna); falls back to')}")
+        print(f"  {_dim('exact COUNT(DISTINCT)/PERCENTILE_CONT where an engine has none.')}")
+        raw_tol = input(
+            f"  Relative tolerance [{_dim(str(SKETCH_DEFAULT_RELATIVE_TOLERANCE))}]: "
+        ).strip()
+        try:
+            tolerance = float(raw_tol) if raw_tol else SKETCH_DEFAULT_RELATIVE_TOLERANCE
+            if tolerance < 0:
+                tolerance = SKETCH_DEFAULT_RELATIVE_TOLERANCE
+        except ValueError:
+            tolerance = SKETCH_DEFAULT_RELATIVE_TOLERANCE
+        return False, True, tolerance
+
+    return False, False, PROFILE_DEFAULT_NUMERIC_TOLERANCE
 
 
 def prompt_embedding() -> "Tuple[bool, Optional[str], str, float]":
@@ -732,6 +753,22 @@ def display_result(result: DiffRun) -> None:
             print(f"  Table rows     : source={fmt(rc_a)}  target={fmt(rc_b)}")
         print(f"  {_yellow('⚠')}  Triage signal only: equal profiles do NOT prove equal rows")
 
+    if result.algorithm == DiffAlgorithm.SKETCH_DIFF and result.metadata:
+        m = result.metadata
+        print(f"  Mode           : approximate per-column cardinality/median, no row data read")
+        print(f"  Relative tol.  : ±{m.get('relative_tolerance', '?')}")
+        print(f"  Columns        : {m.get('columns_profiled', '?')} profiled")
+        print(f"  Distinct algo  : source={m.get('distinct_algorithm_source', '?')}  "
+              f"target={m.get('distinct_algorithm_target', '?')}")
+        print(f"  Median algo    : source={m.get('median_algorithm_source', '?')}  "
+              f"target={m.get('median_algorithm_target', '?')}")
+        rc_a = m.get('table_row_count_source')
+        rc_b = m.get('table_row_count_target')
+        if rc_a is not None or rc_b is not None:
+            fmt = lambda v: f"{v:,}" if isinstance(v, int) else "?"
+            print(f"  Table rows     : source={fmt(rc_a)}  target={fmt(rc_b)}")
+        print(f"  {_yellow('⚠')}  Triage signal only — estimates are approximate by design")
+
     if result.algorithm == DiffAlgorithm.BLOOM and result.metadata:
         m = result.metadata
         comparable = m.get('hash_comparable', False)
@@ -775,14 +812,18 @@ def display_result(result: DiffRun) -> None:
         print(f"  Est. total diffs: ~{est:,} rows (extrapolated)")
         print(f"  {_yellow('⚠')}  ADDED rows in target are not detected (source-perspective only)")
 
-    # Row count summary (SCHEMA_DIFF / PROFILE_DIFF count columns, not rows)
+    # Row count summary (SCHEMA_DIFF / PROFILE_DIFF / SKETCH_DIFF count columns, not rows)
     s = result.summary
     if s is not None:
-        column_mode = result.algorithm in (DiffAlgorithm.SCHEMA_DIFF, DiffAlgorithm.PROFILE_DIFF)
+        column_mode = result.algorithm in (
+            DiffAlgorithm.SCHEMA_DIFF, DiffAlgorithm.PROFILE_DIFF, DiffAlgorithm.SKETCH_DIFF
+        )
         unit_src = "Source columns" if column_mode else "Source rows   "
         unit_tgt = "Target columns" if column_mode else "Target rows   "
         if result.algorithm == DiffAlgorithm.PROFILE_DIFF:
             modified_hint = "(profile stats differ)"
+        elif result.algorithm == DiffAlgorithm.SKETCH_DIFF:
+            modified_hint = "(estimates differ)"
         elif column_mode:
             modified_hint = "(attributes differ)"
         else:
@@ -1026,13 +1067,15 @@ def main() -> None:
             use_embedding = False
             bloom_fpr = BLOOM_DEFAULT_FPR
 
-            # Schema-only and profile-only diffs need no join keys — offered before key detection
+            # Schema-only and aggregate-only diffs need no join keys — offered before key detection
             use_schema_diff, schema_strict = prompt_schema_diff()
-            use_profile_diff, profile_tolerance = (False, PROFILE_DEFAULT_NUMERIC_TOLERANCE)
+            use_profile_diff, use_sketch_diff, aggregate_tolerance = (
+                False, False, PROFILE_DEFAULT_NUMERIC_TOLERANCE
+            )
             if not use_schema_diff:
-                use_profile_diff, profile_tolerance = prompt_profile_diff()
+                use_profile_diff, use_sketch_diff, aggregate_tolerance = prompt_aggregate_diff()
 
-            if use_schema_diff or use_profile_diff:
+            if use_schema_diff or use_profile_diff or use_sketch_diff:
                 keys1: List[str] = []
                 keys2: List[str] = []
             else:
@@ -1044,7 +1087,7 @@ def main() -> None:
 
             same_instance = connector1.connection_config.host == connector2.connection_config.host and connector1.connection_config.database == connector2.connection_config.database
 
-            if not use_schema_diff and not use_profile_diff and not use_embedding and not same_instance:
+            if not use_schema_diff and not use_profile_diff and not use_sketch_diff and not use_embedding and not same_instance:
 
                 # Bloom prefilter: cheap signal before committing to a full diff
                 use_bloom, bloom_fpr = prompt_bloom()
@@ -1063,14 +1106,16 @@ def main() -> None:
             print("  " + "─" * 54)
             print(f"  Source  : {_cyan(src1):<20} {_bold(fq1)}")
             print(f"  Target  : {_cyan(src2):<20} {_bold(fq2)}")
-            if use_schema_diff or use_profile_diff:
+            if use_schema_diff or use_profile_diff or use_sketch_diff:
                 print(f"  Keys    : {_dim('— (not needed for this algorithm)')}")
             else:
                 print(f"  Keys    : {', '.join(keys1)}  ←→  {', '.join(keys2)}")
             if use_schema_diff:
                 print(f"  Algorithm: SCHEMA_DIFF  (structure only{', strict' if schema_strict else ''}; no data read)")
             elif use_profile_diff:
-                print(f"  Algorithm: PROFILE_DIFF  (numeric tolerance={profile_tolerance}; no row data read)")
+                print(f"  Algorithm: PROFILE_DIFF  (numeric tolerance={aggregate_tolerance}; no row data read)")
+            elif use_sketch_diff:
+                print(f"  Algorithm: SKETCH_DIFF  (relative tolerance={aggregate_tolerance}; no row data read)")
             elif use_embedding:
                 print(f"  Algorithm: EMBEDDING_SIMILARITY  (column={vector_column}, metric={embedding_metric}, threshold={embedding_threshold})")
             elif use_bloom:
@@ -1095,7 +1140,10 @@ def main() -> None:
                         db1["schema_strict"] = schema_strict
                     elif use_profile_diff:
                         db1["use_profile_diff"] = True
-                        db1["profile_numeric_tolerance"] = profile_tolerance
+                        db1["profile_numeric_tolerance"] = aggregate_tolerance
+                    elif use_sketch_diff:
+                        db1["use_sketch_diff"] = True
+                        db1["sketch_relative_tolerance"] = aggregate_tolerance
                     elif use_embedding:
                         db1["use_embedding"] = True
                         db1["vector_column"] = vector_column

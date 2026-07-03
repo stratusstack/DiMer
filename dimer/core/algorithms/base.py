@@ -3,7 +3,7 @@
 import hashlib
 import re
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import structlog
 
@@ -50,6 +50,10 @@ EMBEDDING_DEFAULT_THRESHOLD = 1e-3
 
 # Profile diff defaults
 PROFILE_DEFAULT_NUMERIC_TOLERANCE = 1e-6
+
+# Sketch diff defaults — looser than PROFILE_DIFF since values are genuinely
+# approximate (HyperLogLog-family error is a few percent by design)
+SKETCH_DEFAULT_RELATIVE_TOLERANCE = 0.05
 
 
 def _supports_sql(connector) -> bool:
@@ -383,3 +387,44 @@ class BaseAlgorithm(ABC):
         cols_b_lower = {c.name.lower() for c in metadata_b.columns}
         common_columns = [col.name for col in metadata_a.columns if col.name.lower() in cols_b_lower]
         return schema_diff, common_columns
+
+    def _diff_stat_dicts(
+        self,
+        columns_a: List[str],
+        columns_b: List[str],
+        stats_a: Dict[str, Dict[str, Any]],
+        stats_b: Dict[str, Dict[str, Any]],
+        stats_equal: Callable[[str, Any, Any], bool],
+    ) -> Tuple[List[DiffRow], int]:
+        """Turn two {column_lower: {stat: value}} dicts into per-column DiffRows.
+
+        Shared by PROFILE_DIFF and SKETCH_DIFF: for each column, only stats
+        present on **both** sides are compared (a stat missing on one side —
+        e.g. a type that doesn't support AVG, or an engine with no native
+        median function — is simply not diffable, not an error). A column
+        with any differing stat becomes one MODIFIED ``DiffRow`` with
+        ``mismatched_columns`` listing the differing *stat names* and
+        ``source_values`` / ``target_values`` holding each side's full stat
+        dict (including non-compared context, e.g. `*_method` labels).
+
+        Returns (row_diffs, modified_count).
+        """
+        row_diffs: List[DiffRow] = []
+        modified = 0
+        for name_a, name_b in zip(columns_a, columns_b):
+            sa = stats_a.get(name_a.lower(), {})
+            sb = stats_b.get(name_b.lower(), {})
+            mismatched = [
+                stat for stat in sa.keys() & sb.keys()
+                if not stats_equal(stat, sa[stat], sb[stat])
+            ]
+            if mismatched:
+                modified += 1
+                row_diffs.append(DiffRow(
+                    key_values={"column": name_a},
+                    status=RowStatus.MODIFIED,
+                    mismatched_columns=sorted(mismatched),
+                    source_values=sa,
+                    target_values=sb,
+                ))
+        return row_diffs, modified

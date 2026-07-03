@@ -33,6 +33,15 @@ class SnowflakeConnector(DataSourceConnector):
         "aggregate_hash": "BIT_XOR(HASH({COL}))",
         "random_func": "RANDOM()",
     }
+    # SKETCH_DIFF (UC3): APPROX_COUNT_DISTINCT is a bias-corrected HyperLogLog
+    # implementation (Flajolet et al.); APPROX_PERCENTILE uses an improved
+    # t-Digest. See ALGO.md §SKETCH_DIFF for sources.
+    SKETCH_FUNCS = {
+        "distinct": "APPROX_COUNT_DISTINCT({COL})",
+        "distinct_algorithm": "HyperLogLog",
+        "median": "APPROX_PERCENTILE({COL}, 0.5)",
+        "median_algorithm": "t-Digest",
+    }
 
     def get_required_params(self) -> List[str]:
         """Return list of required connection parameters for Snowflake."""
