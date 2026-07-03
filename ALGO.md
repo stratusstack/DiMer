@@ -66,11 +66,10 @@ use_embedding=True?  (vector columns, e.g. pgvector)
 
 `FULL_FETCH_DIFF` is not selected automatically — it is available by calling `compare_cross_database()` directly.
 
-## Non-SQL (document-store) execution path
+## Non-SQL execution path
 
-Connectors that cannot execute SQL (currently MongoDB) declare
-`SUPPORTS_SQL = False` and expose data-access primitives that the algorithms
-call in place of generated SQL:
+Connectors that cannot execute SQL declare `SUPPORTS_SQL = False` and expose
+data-access primitives that the algorithms call in place of generated SQL:
 
 | Primitive | Replaces | Used by |
 |---|---|---|
@@ -81,12 +80,37 @@ call in place of generated SQL:
 | `fetch_key_hashes(table, keys, non_key_cols)` | `SELECT keys, <hash>` | HASH_DIFF Phase 1, BLOOM |
 
 `fetch_key_hashes` computes the row hash client-side with the same Python MD5
-recipe used elsewhere for cross-database hashing, so two MongoDB sides are
-hash-comparable to each other (but never to a SQL engine's pushdown hash).
+recipe used elsewhere for cross-database hashing, so two sides of the same
+connector class are hash-comparable to each other (but never to a SQL
+engine's pushdown hash, or to a different non-SQL connector class).
 
 `JOIN_DIFF` and `BISECTION` are unavailable for non-SQL sources: there are no
-SQL joins, and MongoDB has no server-side aggregate hash — a client-side
-bisection would fetch every row and add nothing over `HASH_DIFF`.
+SQL joins, and none of these engines has a server-side aggregate hash — a
+client-side bisection would fetch every row and add nothing over `HASH_DIFF`.
+
+**UC1 (`FULL_FETCH_DIFF`, via `compare_cross_database()`) and UC2
+(`SCHEMA_DIFF`, via `compare_schema_only()`) require no algorithm-layer
+changes at all** — both already dispatch on `SUPPORTS_SQL` /
+`get_table_metadata()`, so any connector implementing the primitives above
+plus `get_table_metadata()` gets both use cases for free. This is how the
+following six non-relational store families are supported, in addition to
+MongoDB (DOC):
+
+| Family | Connector | `table_name` maps to | Row identity | Schema (UC2) source |
+|---|---|---|---|---|
+| KV (key-value) | `dimer/connectors/redis` | key namespace pattern (`user` → `user:*`) | Redis key (`_key`) | sampled Hash-field inference |
+| WIDE (wide-column) | `dimer/connectors/cassandra` | `keyspace.table` | CQL primary key columns | real catalog (`system_schema.columns`) |
+| SRCH (search engine) | `dimer/connectors/elasticsearch` | index name | document `_id` | real catalog (index `_mapping`) |
+| GRPH (graph) | `dimer/connectors/neo4j` | node label | `elementId(n)` (`_id`) | real catalog (`db.schema.nodeTypeProperties()`), sampled fallback |
+| VEC (vector store) | `dimer/connectors/qdrant` | collection name | point `id` (`_id`) | real vector config + sampled payload inference |
+| TS (time-series) | `dimer/connectors/influxdb` | measurement name | point `time` | real catalog (`SHOW FIELD KEYS` / `SHOW TAG KEYS`) |
+
+Each follows the MongoDB template exactly: `SUPPORTS_SQL = False`,
+`DIALECTS = {}`, the five primitives above implemented against the engine's
+native client, and `get_table_metadata()` built from whichever schema source
+the engine actually has — a real catalog where one exists (Cassandra,
+Elasticsearch, Neo4j's node-type-properties procedure, InfluxDB), sampled
+inference where the store is genuinely schemaless (Redis, Qdrant payloads).
 
 ---
 
@@ -705,6 +729,12 @@ Both sides are read through the connector's existing `get_table_metadata()`:
 | DWH (Snowflake, BigQuery, Databricks, DuckDB) | native catalog / information schema |
 | NSQL (CockroachDB, TiDB, Yugabyte) | inherited from the PostgreSQL / MySQL connectors |
 | DOC (MongoDB) | works incidentally via sampled schema inference (see caveat) |
+| KV (Redis) | sampled Hash-field inference (see [Non-SQL execution path](#non-sql-execution-path)) |
+| WIDE (Cassandra) | real catalog — `system_schema.columns` |
+| SRCH (Elasticsearch) | real catalog — index `_mapping` |
+| GRPH (Neo4j) | real catalog — `db.schema.nodeTypeProperties()`, sampled fallback |
+| VEC (Qdrant) | real vector config + sampled payload-field inference |
+| TS (InfluxDB) | real catalog — `SHOW FIELD KEYS` / `SHOW TAG KEYS` |
 
 ### What is compared
 

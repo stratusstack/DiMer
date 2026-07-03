@@ -337,6 +337,7 @@ class TestNewConnectorRegistration:
     @pytest.mark.parametrize("source_type", [
         "cockroachdb", "cockroach", "crdb", "yugabyte", "yugabytedb", "tidb",
         "mongodb", "mongo",
+        "redis", "cassandra", "elasticsearch", "elastic", "neo4j", "qdrant", "influxdb",
     ])
     def test_registered(self, source_type):
         # The autouse reset_factory fixture clears the registry pre-test
@@ -377,3 +378,27 @@ class TestNewConnectorRegistration:
         for primitive in ("count_rows", "fetch_all_rows", "fetch_rows_by_keys",
                           "sample_rows", "fetch_key_hashes"):
             assert callable(getattr(MongoDBConnector, primitive))
+
+    @pytest.mark.parametrize("module_path, class_name", [
+        ("dimer.connectors.redis.connector", "RedisConnector"),
+        ("dimer.connectors.cassandra.connector", "CassandraConnector"),
+        ("dimer.connectors.elasticsearch.connector", "ElasticsearchConnector"),
+        ("dimer.connectors.neo4j.connector", "Neo4jConnector"),
+        ("dimer.connectors.qdrant.connector", "QdrantConnector"),
+        ("dimer.connectors.influxdb.connector", "InfluxDBConnector"),
+    ])
+    def test_new_store_family_declares_non_sql(self, module_path, class_name):
+        """KV/WIDE/SRCH/GRPH/VEC/TS connectors all follow the MongoDB contract:
+        SUPPORTS_SQL=False, no DIALECTS, and every non-SQL primitive present —
+        this is what makes UC1 (FULL_FETCH_DIFF) and UC2 (SCHEMA_DIFF) work for
+        them with zero changes to the algorithm layer."""
+        import importlib
+
+        module = importlib.import_module(module_path)
+        connector_class = getattr(module, class_name)
+
+        assert connector_class.SUPPORTS_SQL is False
+        assert connector_class.DIALECTS == {}
+        for primitive in ("count_rows", "fetch_all_rows", "fetch_rows_by_keys",
+                          "sample_rows", "fetch_key_hashes", "get_table_metadata"):
+            assert callable(getattr(connector_class, primitive))

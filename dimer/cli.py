@@ -130,6 +130,12 @@ SUPPORTED_SOURCES: List[str] = [
     "yugabyte",
     "tidb",
     "mongodb",
+    "redis",
+    "cassandra",
+    "elasticsearch",
+    "neo4j",
+    "qdrant",
+    "influxdb",
 ]
 
 REQUIRED_VARS: Dict[str, List[str]] = {
@@ -186,6 +192,28 @@ REQUIRED_VARS: Dict[str, List[str]] = {
         "MONGODB_HOST",
         "MONGODB_DATABASE",
     ],
+    "redis": [
+        "REDIS_HOST",
+    ],
+    "cassandra": [
+        "CASSANDRA_HOST",
+        "CASSANDRA_DATABASE",
+    ],
+    "elasticsearch": [
+        "ELASTICSEARCH_HOST",
+    ],
+    "neo4j": [
+        "NEO4J_HOST",
+        "NEO4J_USER",
+        "NEO4J_PASSWORD",
+    ],
+    "qdrant": [
+        "QDRANT_HOST",
+    ],
+    "influxdb": [
+        "INFLUXDB_HOST",
+        "INFLUXDB_DATABASE",
+    ],
 }
 
 # Shown to the user when they are asked to enter the FQ table name
@@ -209,6 +237,12 @@ FQ_HINTS: Dict[str, str] = {
         "collection                e.g. orders\n"
         "                          or   database.collection"
     ),
+    "redis": "key namespace pattern     e.g. user  (expands to user:*) or user:*",
+    "cassandra": "keyspace.table            e.g. app.orders",
+    "elasticsearch": "index                     e.g. orders",
+    "neo4j": "node label                e.g. Order",
+    "qdrant": "collection                e.g. orders",
+    "influxdb": "measurement               e.g. orders",
 }
 
 
@@ -325,6 +359,60 @@ def build_config(source_type: str) -> ConnectionConfig:
                 "uri": os.getenv("MONGODB_URI"),
                 "auth_source": os.getenv("MONGODB_AUTH_SOURCE", "admin"),
             },
+        )
+    if source_type == "redis":
+        return ConnectionConfig(
+            host=os.getenv("REDIS_HOST", "localhost"),
+            port=int(os.getenv("REDIS_PORT", "6379")),
+            password=os.getenv("REDIS_PASSWORD"),
+            extra_params={
+                "db": int(os.getenv("REDIS_DB", "0")),
+            },
+        )
+    if source_type == "cassandra":
+        return ConnectionConfig(
+            host=os.getenv("CASSANDRA_HOST", "localhost"),
+            port=int(os.getenv("CASSANDRA_PORT", "9042")),
+            username=os.getenv("CASSANDRA_USER"),
+            password=os.getenv("CASSANDRA_PASSWORD"),
+            database=os.getenv("CASSANDRA_DATABASE"),
+        )
+    if source_type == "elasticsearch":
+        return ConnectionConfig(
+            host=os.getenv("ELASTICSEARCH_HOST", "localhost"),
+            port=int(os.getenv("ELASTICSEARCH_PORT", "9200")),
+            username=os.getenv("ELASTICSEARCH_USER"),
+            password=os.getenv("ELASTICSEARCH_PASSWORD"),
+            extra_params={
+                "scheme": os.getenv("ELASTICSEARCH_SCHEME", "https"),
+                "api_key": os.getenv("ELASTICSEARCH_API_KEY"),
+            },
+        )
+    if source_type == "neo4j":
+        return ConnectionConfig(
+            host=os.getenv("NEO4J_HOST", "localhost"),
+            port=int(os.getenv("NEO4J_PORT", "7687")),
+            username=os.getenv("NEO4J_USER"),
+            password=os.getenv("NEO4J_PASSWORD"),
+            extra_params={
+                "scheme": os.getenv("NEO4J_SCHEME", "bolt"),
+            },
+        )
+    if source_type == "qdrant":
+        return ConnectionConfig(
+            host=os.getenv("QDRANT_HOST", "localhost"),
+            port=int(os.getenv("QDRANT_PORT", "6333")),
+            extra_params={
+                "api_key": os.getenv("QDRANT_API_KEY"),
+            },
+        )
+    if source_type == "influxdb":
+        return ConnectionConfig(
+            host=os.getenv("INFLUXDB_HOST", "localhost"),
+            port=int(os.getenv("INFLUXDB_PORT", "8086")),
+            username=os.getenv("INFLUXDB_USER"),
+            password=os.getenv("INFLUXDB_PASSWORD"),
+            database=os.getenv("INFLUXDB_DATABASE"),
         )
     raise ValueError(f"Unknown source type: {source_type!r}")
 
