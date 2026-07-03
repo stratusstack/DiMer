@@ -1,6 +1,6 @@
 # DiMer Diff Algorithms
 
-DiMer implements nine diff algorithms. Three are selected automatically based on context; six require explicit opt-in.
+DiMer implements ten diff algorithms. Three are selected automatically based on context; seven require explicit opt-in.
 
 | Algorithm       | Selected when                              | Key characteristic                                      |
 | --------------- | ------------------------------------------ | ------------------------------------------------------- |
@@ -13,6 +13,7 @@ DiMer implements nine diff algorithms. Three are selected automatically based on
 | `EMBEDDING_SIMILARITY` | Explicit opt-in                     | Vector diff — same id, distance beyond tolerance = MODIFIED |
 | `SCHEMA_DIFF`   | Explicit opt-in                            | Structure compare from catalog metadata — no data read |
 | `PROFILE_DIFF`  | Explicit opt-in                            | Per-column aggregate stats compare — pushdown, no row data read |
+| `SKETCH_DIFF`   | Explicit opt-in                            | Approximate per-column cardinality (HLL-family) + approximate median — cheaper than PROFILE_DIFF at huge scale |
 
 ## Algorithm selection guide
 
@@ -21,8 +22,12 @@ use_schema_diff=True?  (structure only; UC2)
   └── Yes  →  SCHEMA_DIFF  (catalog metadata compare; no data read, no keys needed)
   └── No
         ↓
-use_profile_diff=True?  (per-column aggregates; UC3)
+use_profile_diff=True?  (per-column exact aggregates; UC3)
   └── Yes  →  PROFILE_DIFF  (pushdown stats compare; no row data read, no keys needed)
+  └── No
+        ↓
+use_sketch_diff=True?  (per-column approximate cardinality/median; UC3)
+  └── Yes  →  SKETCH_DIFF  (native sketch functions where available, exact fallback otherwise; no row data read, no keys needed)
   └── No
         ↓
 use_embedding=True?  (vector columns, e.g. pgvector)
@@ -55,6 +60,7 @@ use_embedding=True?  (vector columns, e.g. pgvector)
 | Vector/embedding columns (pgvector, vector stores) | `EMBEDDING_SIMILARITY` (set `use_embedding=True` + `vector_column`) |
 | CI/CD gate before a data diff; detecting silent type drift | `SCHEMA_DIFF` (set `use_schema_diff=True`; near-zero cost, no keys needed) |
 | Cheap first-pass triage before committing to a row-level diff | `PROFILE_DIFF` (set `use_profile_diff=True`; one aggregation scan/side, no keys needed) |
+| Same triage, but tables are huge and exact `COUNT(DISTINCT)` is too slow | `SKETCH_DIFF` (set `use_sketch_diff=True`; native HLL-family sketch where the engine has one) |
 | Debugging / verifying HASH_DIFF results | `FULL_FETCH_DIFF` (call `compare_cross_database()` directly) |
 
 
@@ -877,6 +883,144 @@ network.
 - When you need to know *which* rows differ (use HASH_DIFF/JOIN_DIFF/BISECTION)
 - When a clean profile must be trusted as proof of parity — it is not; two
   very different tables can share identical count/min/max/avg by coincidence
+
+---
+
+## SKETCH_DIFF
+
+**File:** `dimer/core/algorithms/sketch_diff.py` → `SketchDiffAlgorithm`
+
+**Used when:** `use_sketch_diff=True` is set in the config, or by calling
+`Diffcheck.compare_sketch_only()` directly. The CLI's aggregate-diff prompt
+(right after the schema-diff prompt) offers PROFILE_DIFF and SKETCH_DIFF as
+two options with a short description each — see below.
+
+### Core idea
+
+Where PROFILE_DIFF's `distinct_count` is exact `COUNT(DISTINCT col)` —
+correct but requires scanning/hashing every value — SKETCH_DIFF asks each
+connector for its **native probabilistic sketch function** instead: a
+HyperLogLog-family structure that estimates cardinality within a few percent
+using a fixed, tiny amount of memory regardless of table size. It does the
+same for the median, using a quantile-summary sketch (t-Digest,
+Greenwald-Khanna, or engine-specific) where one exists. This is the natural
+next step over PROFILE_DIFF at very large cardinalities, exactly as
+flagged in `USE_CASE_MATRIX.md`.
+
+**Research note:** sketch availability is genuinely per-engine, not
+per-dialect. Two connectors that are wire-compatible for SQL execution can
+still differ completely in sketch support — TiDB has a native
+`APPROX_COUNT_DISTINCT` that vanilla MySQL lacks entirely; CockroachDB
+accepts `CREATE EXTENSION` syntactically but treats it as a documented
+no-op, so the `postgresql-hll` extension can never actually be installed
+there even though it's wire-compatible with PostgreSQL. Because of this,
+sketch capability is declared per **connector class** (a `SKETCH_FUNCS`
+dict, following the same pattern as `DIALECTS`), not inherited by default —
+NSQL connectors that do inherit it (CockroachDB, Yugabyte from PostgreSQL)
+do so because their actual capability matches, verified individually below.
+
+### Per-engine algorithm (verified against vendor documentation)
+
+| Engine | `APPROX_COUNT_DISTINCT` equivalent | Algorithm | `median` equivalent | Algorithm |
+|---|---|---|---|---|
+| Snowflake | `APPROX_COUNT_DISTINCT(col)` | HyperLogLog (bias-corrected, Flajolet et al.) | `APPROX_PERCENTILE(col, 0.5)` | improved t-Digest |
+| BigQuery | `APPROX_COUNT_DISTINCT(col)` | HyperLogLog++ | `APPROX_QUANTILES(col, 2)[OFFSET(1)]` | quantile-summary sketch (algorithm undocumented by Google) |
+| Databricks | `approx_count_distinct(col)` | HyperLogLog++ (dense variant) | `approx_percentile(col, 0.5)` | Greenwald-Khanna quantile summary |
+| DuckDB | `approx_count_distinct(col)` | HyperLogLog | `approx_quantile(col, 0.5)` | t-Digest |
+| TiDB | `APPROX_COUNT_DISTINCT(col)` | BJKST algorithm | `APPROX_PERCENTILE(col, 50)` — **percentage 0–100, not a 0–1 fraction** | undocumented by PingCAP |
+| PostgreSQL | *(none — falls back to exact `COUNT(DISTINCT col)`)* | exact | `PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY col)` | exact (not a sketch, but still single-scan pushdown) |
+| CockroachDB | *(none — `CREATE EXTENSION` is a documented no-op, so `postgresql-hll` can't be installed)* | exact | inherited from PostgreSQL (`PERCENTILE_CONT` is natively supported) | exact |
+| YugabyteDB | *(none in the current implementation — see limitation below)* | exact | inherited from PostgreSQL (YSQL supports `PERCENTILE_CONT` natively) | exact |
+| MySQL | *(none — falls back to exact `COUNT(DISTINCT col)`)* | exact | *(omitted entirely — vanilla MySQL has no `PERCENTILE_CONT`/`PERCENTILE_DISC` at all)* | unsupported |
+
+**YugabyteDB limitation:** the `hll` extension *can* be installed
+(`CREATE EXTENSION hll`, unlike CockroachDB where the statement is a no-op),
+but nothing guarantees a given cluster has actually done so — DiMer cannot
+assume a server-side admin action it didn't perform, so Yugabyte gets the
+same exact fallback as PostgreSQL for now. Detecting the extension at
+connect time and opportunistically using it is tracked in
+`TODO_FOR_LATER.md`.
+
+**MySQL limitation:** the only engine where a stat is *entirely* unavailable
+rather than falling back to an exact equivalent — vanilla MySQL has neither
+a cardinality sketch nor any percentile function (MySQL HeatWave's `HLL()`
+is a separate managed engine, not applicable here). `distinct_estimate`
+still works (exact `COUNT(DISTINCT)` fallback); `median_estimate` is simply
+never computed for MySQL-family columns.
+
+### Which stats are computed per column
+
+Same eligibility rules as PROFILE_DIFF, decided independently per side:
+
+| Stat | Eligible types | Notes |
+|---|---|---|
+| `distinct_estimate` | same as PROFILE_DIFF's `distinct_count` (numeric, date/time, string/text, boolean, uuid) | uses the connector's `SKETCH_FUNCS["distinct"]` template, or exact `COUNT(DISTINCT)` if absent |
+| `median_estimate` | numeric + date/time only (not string/text — sketches model numeric distributions) | uses `SKETCH_FUNCS["median"]`; entirely omitted if the connector declares none |
+
+`distinct_method` / `median_method` accompany each estimate in
+`source_values`/`target_values` (e.g. `"HyperLogLog"`, `"exact"`) for
+transparency, but are never compared — a genuinely different algorithm on
+each side (e.g. Snowflake vs. BigQuery) is expected, not a mismatch.
+
+### Configuration
+
+| Key | Default | Meaning |
+|---|---|---|
+| `use_sketch_diff` | — | explicit opt-in |
+| `sketch_columns` | all common columns | restrict to a subset |
+| `sketch_relative_tolerance` | `0.05` (5%) | relative tolerance for estimate comparison |
+
+The default tolerance is deliberately looser than PROFILE_DIFF's `1e-6`:
+HyperLogLog-family estimators carry a few percent error by design (Snowflake
+documents ~1.6% average relative error at default precision), and cross-side
+comparisons can even mix two *different* sketch algorithms or an exact value
+against an estimate.
+
+### Result semantics
+
+Same shape as PROFILE_DIFF (shared via `BaseAlgorithm._diff_stat_dicts`):
+one `DiffRow` per column with any differing stat, `mismatched_columns`
+listing the differing stat names, `source_values`/`target_values` holding
+the full per-column stat dict (including the method labels).
+`DiffRun.summary` counts are over **profiled columns**.
+
+`DiffRun.metadata`: `relative_tolerance`, `columns_profiled`,
+`columns_common`, `table_row_count_source`, `table_row_count_target`,
+`distinct_algorithm_source`, `distinct_algorithm_target`,
+`median_algorithm_source`, `median_algorithm_target` (`"unsupported"` when a
+side has no median capability at all — currently only MySQL).
+
+### When it excels
+
+- Cardinality/median triage on tables too large for PROFILE_DIFF's exact
+  `COUNT(DISTINCT)` to be cheap (billions of rows, high-cardinality columns)
+- Warehouse-to-warehouse comparisons where both sides already have HLL-family
+  functions built in (Snowflake/BigQuery/Databricks/DuckDB) — genuinely free
+  accuracy, no extension installation required
+- Continuous/scheduled monitoring (UC5) where the tolerance for a false
+  "differs" signal is higher than for a one-off audit
+
+### When not to use it
+
+- Small-to-medium tables where PROFILE_DIFF's exact stats are cheap anyway —
+  SKETCH_DIFF trades exactness for scale, which isn't worth it below the
+  threshold where `COUNT(DISTINCT)` is already fast
+- MySQL-only comparisons where median matters — it's never computed there
+- When the 5% default tolerance would hide a difference you care about (tune
+  `sketch_relative_tolerance` down, but remember the estimates themselves
+  carry inherent error below a few percent regardless of tolerance setting)
+
+### Sources for the per-engine algorithm matrix
+
+- [Snowflake — APPROX_COUNT_DISTINCT](https://docs.snowflake.com/en/sql-reference/functions/approx_count_distinct), [APPROX_PERCENTILE](https://docs.snowflake.com/en/sql-reference/functions/approx_percentile)
+- [BigQuery — Approximate aggregate functions](https://cloud.google.com/bigquery/docs/reference/standard-sql/approximate_aggregate_functions), [HyperLogLog++ functions](https://cloud.google.com/bigquery/docs/reference/standard-sql/hll_functions)
+- [Databricks — approx_count_distinct](https://docs.databricks.com/aws/en/sql/language-manual/functions/approx_count_distinct), [percentile_approx](https://docs.databricks.com/aws/en/sql/language-manual/functions/percentile_approx); [Spark PR #14298 implementing percentile_approx via Greenwald-Khanna](https://github.com/apache/spark/pull/14298)
+- [DuckDB — approx_count_distinct / approx_quantile (t-Digest)](https://database.guide/understanding-duckdbs-approx_count_distinct-function/)
+- [TiDB — Aggregate (GROUP BY) Functions (APPROX_COUNT_DISTINCT / APPROX_PERCENTILE)](https://docs.pingcap.com/tidb/stable/aggregate-group-by-functions/)
+- [PostgreSQL — postgresql-hll extension (citusdata)](https://github.com/citusdata/postgresql-hll), [tdigest extension (tvondra)](https://github.com/tvondra/tdigest) — both confirm neither ships with core PostgreSQL
+- [CockroachDB — aggregate function reference](https://github.com/cockroachdb/cockroach/blob/master/docs/generated/sql/aggregates.md) (no APPROX_*/HLL functions; PERCENTILE_CONT/DISC present), [CREATE EXTENSION is a documented no-op](https://github.com/cockroachdb/cockroach/issues/74777)
+- [YugabyteDB — postgresql-hll extension support](https://docs.yugabyte.com/stable/additional-features/pg-extensions/extension-postgresql-hll/)
+- [MySQL — no PERCENTILE_CONT/DISC support](https://bugs.mysql.com/bug.php?id=93234); [MySQL HeatWave HLL() (separate managed engine)](https://dev.mysql.com/doc/heatwave/en/mys-hw-aggregate-functions.html)
 
 ---
 

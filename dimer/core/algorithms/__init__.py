@@ -10,6 +10,7 @@ from dimer.core.algorithms.join_diff import JoinDiffAlgorithm
 from dimer.core.algorithms.profile_diff import ProfileDiffAlgorithm
 from dimer.core.algorithms.sampled import SampledAlgorithm
 from dimer.core.algorithms.schema_diff import SchemaDiffAlgorithm
+from dimer.core.algorithms.sketch_diff import SketchDiffAlgorithm
 
 __all__ = [
     "BaseAlgorithm",
@@ -23,4 +24,5 @@ __all__ = [
     "ProfileDiffAlgorithm",
     "SampledAlgorithm",
     "SchemaDiffAlgorithm",
+    "SketchDiffAlgorithm",
 ]

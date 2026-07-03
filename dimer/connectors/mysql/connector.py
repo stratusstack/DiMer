@@ -31,6 +31,15 @@ class MySQLConnector(DataSourceConnector):
         "aggregate_hash": "BIT_XOR(CONV(SUBSTRING(MD5(CONCAT({COL})), 1, 16), 16, 10))",
         "random_func": "RAND()",
     }
+    # SKETCH_DIFF (UC3): intentionally empty. Vanilla MySQL has no native
+    # cardinality sketch (HeatWave's HLL() is a separate managed engine, not
+    # available here) and, unlike PostgreSQL, no PERCENTILE_CONT/DISC at all
+    # — so both distinct-count and median fall outside a pure-SQL pushdown
+    # for this connector. SketchDiffAlgorithm falls back to exact
+    # COUNT(DISTINCT) for cardinality and omits the median stat entirely.
+    # TiDB overrides this with its native APPROX_COUNT_DISTINCT/
+    # APPROX_PERCENTILE — see tidb/connector.py. See ALGO.md §SKETCH_DIFF.
+    SKETCH_FUNCS: Dict[str, str] = {}
 
     def get_required_params(self) -> List[str]:
         """Return list of required connection parameters for MySQL."""

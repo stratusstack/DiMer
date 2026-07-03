@@ -32,6 +32,18 @@ class PostgreSQLConnector(DataSourceConnector):
         "aggregate_hash": "BIT_XOR(CONV(SUBSTRING(MD5({COL}), 1, 16), 16, 10))",
         "random_func": "RANDOM()",
     }
+    # SKETCH_DIFF (UC3): vanilla PostgreSQL has no built-in cardinality
+    # sketch — the `postgresql-hll` extension exists but is not installed by
+    # default, so no 'distinct' key is declared here (falls back to exact
+    # COUNT(DISTINCT)). PERCENTILE_CONT is a built-in *exact* ordered-set
+    # aggregate (no sketch, but still pushdown-only and single-scan), used
+    # as the median stat. Inherited unchanged by CockroachDB and Yugabyte —
+    # see those connectors for why they don't get a 'distinct' sketch either.
+    # See ALGO.md §SKETCH_DIFF for sources.
+    SKETCH_FUNCS = {
+        "median": "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {COL})",
+        "median_algorithm": "exact (percentile_cont, no native sketch)",
+    }
 
     def get_required_params(self) -> List[str]:
         """Return list of required connection parameters for PostgreSQL."""

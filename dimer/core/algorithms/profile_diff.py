@@ -11,7 +11,7 @@ from dimer.core.algorithms.base import (
     _get_col_value,
     _validate_identifier,
 )
-from dimer.core.models import ColumnMetadata, DiffAlgorithm, DiffResult, DiffRow, DiffRun, RowStatus
+from dimer.core.models import ColumnMetadata, DiffAlgorithm, DiffResult, DiffRun
 
 logger = structlog.get_logger(__name__)
 
@@ -27,6 +27,10 @@ _ORDERABLE_TYPES = _NUMERIC_TYPES | {"date", "datetime", "timestamp", "time", "s
 # Excluded: json/array/object (no equality operator on some engines, e.g.
 # Postgres 'json' vs 'jsonb'), binary (driver-dependent equality semantics).
 _DISTINCT_TYPES = _ORDERABLE_TYPES | {"boolean", "uuid"}
+# Types eligible for a median/quantile sketch (SKETCH_DIFF): numeric +
+# date/time. Excludes string/text — t-Digest/quantile-summary sketches are
+# built for numeric distributions, not lexicographic ordering.
+_MEDIAN_ELIGIBLE_TYPES = _NUMERIC_TYPES | {"date", "datetime", "timestamp", "time"}
 
 # Integer-valued stats compared exactly; float-valued stats compared with tolerance
 _EXACT_STATS = ("count", "null_count", "distinct_count")
@@ -134,24 +138,10 @@ class ProfileDiffAlgorithm(BaseAlgorithm):
             self._right_connector, safe_b, common_columns_b, meta_map_b, case_b
         )
 
-        row_diffs: List[DiffRow] = []
-        modified = 0
-        for name_a, name_b in zip(common_columns, common_columns_b):
-            col_stats_a = stats_a.get(name_a.lower(), {})
-            col_stats_b = stats_b.get(name_b.lower(), {})
-            mismatched = [
-                stat for stat in col_stats_a.keys() & col_stats_b.keys()
-                if not self._stats_equal(stat, col_stats_a[stat], col_stats_b[stat], tolerance)
-            ]
-            if mismatched:
-                modified += 1
-                row_diffs.append(DiffRow(
-                    key_values={"column": name_a},
-                    status=RowStatus.MODIFIED,
-                    mismatched_columns=sorted(mismatched),
-                    source_values=col_stats_a,
-                    target_values=col_stats_b,
-                ))
+        row_diffs, modified = self._diff_stat_dicts(
+            common_columns, common_columns_b, stats_a, stats_b,
+            lambda stat, va, vb: self._stats_equal(stat, va, vb, tolerance),
+        )
 
         summary = DiffResult(
             source_row_count=len(common_columns),  # counts are over columns

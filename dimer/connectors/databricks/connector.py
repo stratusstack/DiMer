@@ -31,6 +31,15 @@ class DatabricksConnector(DataSourceConnector):
         "aggregate_hash": "BIT_XOR(HASH({COL}))",
         "random_func": "RAND()",
     }
+    # SKETCH_DIFF (UC3): approx_count_distinct is HyperLogLog++ (dense
+    # variant); approx_percentile uses Spark's Greenwald-Khanna quantile
+    # summary. See ALGO.md §SKETCH_DIFF for sources.
+    SKETCH_FUNCS = {
+        "distinct": "approx_count_distinct({COL})",
+        "distinct_algorithm": "HyperLogLog++",
+        "median": "approx_percentile({COL}, 0.5)",
+        "median_algorithm": "Greenwald-Khanna quantile summary",
+    }
 
     def get_required_params(self) -> List[str]:
         """Return list of required connection parameters for Databricks."""
