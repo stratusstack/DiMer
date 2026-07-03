@@ -48,6 +48,9 @@ BLOOM_DEFAULT_FPR = 0.01
 EMBEDDING_DEFAULT_METRIC = "cosine"
 EMBEDDING_DEFAULT_THRESHOLD = 1e-3
 
+# Profile diff defaults
+PROFILE_DEFAULT_NUMERIC_TOLERANCE = 1e-6
+
 
 def _supports_sql(connector) -> bool:
     """True when the connector executes SQL (default for all connectors).

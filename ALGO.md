@@ -1,6 +1,6 @@
 # DiMer Diff Algorithms
 
-DiMer implements eight diff algorithms. Three are selected automatically based on context; five require explicit opt-in.
+DiMer implements nine diff algorithms. Three are selected automatically based on context; six require explicit opt-in.
 
 | Algorithm       | Selected when                              | Key characteristic                                      |
 | --------------- | ------------------------------------------ | ------------------------------------------------------- |
@@ -12,12 +12,17 @@ DiMer implements eight diff algorithms. Three are selected automatically based o
 | `BLOOM`         | Explicit opt-in                            | Prefilter — cheap "definitely differs" signal; no Phase 2 fetch |
 | `EMBEDDING_SIMILARITY` | Explicit opt-in                     | Vector diff — same id, distance beyond tolerance = MODIFIED |
 | `SCHEMA_DIFF`   | Explicit opt-in                            | Structure compare from catalog metadata — no data read |
+| `PROFILE_DIFF`  | Explicit opt-in                            | Per-column aggregate stats compare — pushdown, no row data read |
 
 ## Algorithm selection guide
 
 ```
 use_schema_diff=True?  (structure only; UC2)
   └── Yes  →  SCHEMA_DIFF  (catalog metadata compare; no data read, no keys needed)
+  └── No
+        ↓
+use_profile_diff=True?  (per-column aggregates; UC3)
+  └── Yes  →  PROFILE_DIFF  (pushdown stats compare; no row data read, no keys needed)
   └── No
         ↓
 use_embedding=True?  (vector columns, e.g. pgvector)
@@ -49,6 +54,7 @@ use_embedding=True?  (vector columns, e.g. pgvector)
 | Quick "is a full diff even worth running?" check | `BLOOM` (set `use_bloom=True`; reports only certain differences) |
 | Vector/embedding columns (pgvector, vector stores) | `EMBEDDING_SIMILARITY` (set `use_embedding=True` + `vector_column`) |
 | CI/CD gate before a data diff; detecting silent type drift | `SCHEMA_DIFF` (set `use_schema_diff=True`; near-zero cost, no keys needed) |
+| Cheap first-pass triage before committing to a row-level diff | `PROFILE_DIFF` (set `use_profile_diff=True`; one aggregation scan/side, no keys needed) |
 | Debugging / verifying HASH_DIFF results | `FULL_FETCH_DIFF` (call `compare_cross_database()` directly) |
 
 
@@ -756,6 +762,121 @@ data pages are touched.
 - Document stores: MongoDB metadata is inferred from a 100-document sample,
   so absent/rare fields may be missed — treat DOC schema diffs as indicative,
   not exact
+
+---
+
+## PROFILE_DIFF
+
+**File:** `dimer/core/algorithms/profile_diff.py` → `ProfileDiffAlgorithm`
+
+**Used when:** `use_profile_diff=True` is set in the config, or by calling
+`Diffcheck.compare_profile_only()` directly. The CLI offers it right after
+the schema-diff prompt (both skip key detection — `keys` may be `[]`).
+
+### Core idea
+
+UC3: compare per-column **aggregate statistics** — count, nulls, distinct
+count, min/max, avg/sum — instead of row data. One aggregation query per side
+computes every profiled column's stats in a single scan; no row values leave
+the database. This is a **triage signal, not a row-level diff**: two tables
+can have identical counts/min/max/avg with completely different row
+contents, but differing profiles *prove* the tables differ. Run it before
+committing to a full row-level diff (HASH_DIFF/JOIN_DIFF/BISECTION).
+
+### Which stats are computed per column
+
+Decided independently per side from that side's own catalog metadata (the
+same `DataTypeMapper`-normalised common type used by `SCHEMA_DIFF`), so a
+type mismatch between sides never fails the query — it just means fewer
+stats are comparable for that column.
+
+| Stat | Requires | Skipped for |
+|---|---|---|
+| `count`, `null_count` | always computed | — |
+| `distinct_count` | `COUNT(DISTINCT col)` — needs an equality operator | `json`, `array`, `object`, `binary` (equality semantics vary or are unsupported, e.g. Postgres `json` vs `jsonb`) |
+| `min`, `max` | orderable type | numeric, date/time, and string/text only |
+| `avg`, `sum` | numeric type | non-numeric columns |
+
+Only stats present on **both** sides for a column are compared; the rest are
+silently skipped (visible per-column in `source_values`/`target_values` on a
+`DiffRow`, since only the keys that exist are stored).
+
+### SQL shape
+
+One query per side, all columns profiled in a single `SELECT`, using
+positional aliases (`c0__count`, `c0__distinct`, `c1__min`, …) rather than
+column-name-derived aliases — this sidesteps identifier-quoting and
+case-folding differences across engines entirely; results are matched back
+to columns by position, using case-insensitive lookups for the raw alias
+each engine happens to return.
+
+```sql
+SELECT COUNT(*) AS _dimer_row_count,
+       COUNT("amount") AS c0__count,
+       COUNT(DISTINCT "amount") AS c0__distinct,
+       MIN("amount") AS c0__min,
+       MAX("amount") AS c0__max,
+       AVG("amount") AS c0__avg,
+       SUM("amount") AS c0__sum,
+       COUNT("name") AS c1__count,
+       COUNT(DISTINCT "name") AS c1__distinct,
+       MIN("name") AS c1__min,
+       MAX("name") AS c1__max
+FROM schema.table_a
+```
+
+`COUNT`, `COUNT(DISTINCT …)`, `MIN`, `MAX`, `AVG`, `SUM` are standard SQL
+supported identically across PostgreSQL, MySQL, Snowflake, BigQuery,
+Databricks, DuckDB, and the NSQL connectors that inherit from them — no new
+`DIALECTS` entries were needed.
+
+### Configuration
+
+| Key | Default | Meaning |
+|---|---|---|
+| `use_profile_diff` | — | explicit opt-in |
+| `profile_columns` | all common columns | restrict profiling to a subset |
+| `profile_numeric_tolerance` | `1e-6` | relative tolerance for `min`/`max`/`avg`/`sum` comparison |
+
+### Comparison semantics
+
+`count`, `null_count`, and `distinct_count` are integers, compared exactly.
+`min`, `max`, `avg`, `sum` are compared with a **relative tolerance**
+(`abs(a - b) <= tolerance * max(|a|, |b|, 1.0)`) to absorb cross-engine
+floating-point and aggregation-order noise; exact integer/date values
+naturally pass with zero delta, so the tolerance never hides a real integer
+mismatch.
+
+### Result semantics
+
+Each column with any differing stat becomes one `DiffRow`
+(`key_values = {"column": name}`, `status = MODIFIED`); `mismatched_columns`
+lists the differing *stat names* and `source_values` / `target_values` hold
+each side's full stat dict. `DiffRun.summary` counts are over **profiled
+columns**, not rows — there are no ADDED/DELETED rows in this algorithm
+(column presence drift is `SCHEMA_DIFF`'s job).
+
+`DiffRun.metadata`: `numeric_tolerance`, `columns_profiled`,
+`columns_common`, `table_row_count_source`, `table_row_count_target`.
+
+### Data transferred
+
+One aggregate row per side, regardless of table size — a handful of numbers
+per profiled column. The database still performs a full scan internally
+(`COUNT(DISTINCT …)` in particular is not free), but no row data crosses the
+network.
+
+### When it excels
+
+- Cheap first-pass triage before a row-level diff (UC5 heartbeat candidate)
+- Wide tables where even HASH_DIFF's narrow Phase 1 is heavier than needed
+- Spotting a bad load early (row count / null rate / distinct count off) without waiting on a full diff
+
+### When not to use it
+
+- When you need to know *which* rows differ (use HASH_DIFF/JOIN_DIFF/BISECTION)
+- When a clean profile must be trusted as proof of parity — it is not; two
+  very different tables can share identical count/min/max/avg by coincidence
 
 ---
 

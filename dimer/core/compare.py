@@ -15,6 +15,7 @@ from dimer.core.algorithms import (
     EmbeddingSimilarityAlgorithm,
     HashDiffAlgorithm,
     JoinDiffAlgorithm,
+    ProfileDiffAlgorithm,
     SampledAlgorithm,
     SchemaDiffAlgorithm,
 )
@@ -26,6 +27,7 @@ from dimer.core.algorithms.base import (
     EMBEDDING_DEFAULT_METRIC,
     EMBEDDING_DEFAULT_THRESHOLD,
     MAX_DETAIL_ROWS,
+    PROFILE_DEFAULT_NUMERIC_TOLERANCE,
     SAMPLED_DEFAULT_CONFIDENCE,
     SAMPLED_DEFAULT_SIZE,
     BaseAlgorithm,
@@ -46,6 +48,7 @@ __all__ = [
     "BLOOM_DEFAULT_FPR",
     "EMBEDDING_DEFAULT_METRIC",
     "EMBEDDING_DEFAULT_THRESHOLD",
+    "PROFILE_DEFAULT_NUMERIC_TOLERANCE",
 ]
 
 
@@ -127,6 +130,11 @@ class Diffcheck:
             logger.info("Schema-diff algorithm selected — catalog metadata compare only")
             return self._make_algorithm(SchemaDiffAlgorithm).run()
 
+        # Profile diff is an explicit opt-in (per-column aggregate compare; UC3)
+        if self._left_config.get('use_profile_diff') or self._right_config.get('use_profile_diff'):
+            logger.info("Profile-diff algorithm selected — per-column aggregate compare")
+            return self._make_algorithm(ProfileDiffAlgorithm).run()
+
         # Embedding similarity is an explicit opt-in (vector sources)
         if self._left_config.get('use_embedding') or self._right_config.get('use_embedding'):
             logger.info("Embedding-similarity algorithm selected — per-id vector distance")
@@ -173,6 +181,15 @@ class Diffcheck:
         automatically by ``compare()`` when ``use_schema_diff=True``.
         """
         return self._make_algorithm(SchemaDiffAlgorithm).run()
+
+    def compare_profile_only(self) -> DiffRun:
+        """Run the PROFILE_DIFF algorithm directly (UC3 — aggregate/profile compare).
+
+        Compares per-column pushdown aggregates (count, nulls, distinct,
+        min/max, avg/sum) only; no row data leaves the database.  Also
+        selected automatically by ``compare()`` when ``use_profile_diff=True``.
+        """
+        return self._make_algorithm(ProfileDiffAlgorithm).run()
 
     def compare_cross_database(self) -> DiffRun:
         """Compare tables using the full in-memory FULL_FETCH_DIFF algorithm.
