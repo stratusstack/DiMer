@@ -189,6 +189,55 @@ def _auto_register_connectors() -> None:
         logger.debug("MongoDB connector not available")
 
     try:
+        # Import and register Redis connector (key-value store, KV family)
+        from dimer.connectors.redis.connector import RedisConnector
+
+        ConnectorFactory.register_connector("redis", RedisConnector)
+    except ImportError:
+        logger.debug("Redis connector not available")
+
+    try:
+        # Import and register Cassandra connector (wide-column store, WIDE family)
+        from dimer.connectors.cassandra.connector import CassandraConnector
+
+        ConnectorFactory.register_connector("cassandra", CassandraConnector)
+    except ImportError:
+        logger.debug("Cassandra connector not available")
+
+    try:
+        # Import and register Elasticsearch connector (search engine, SRCH family)
+        from dimer.connectors.elasticsearch.connector import ElasticsearchConnector
+
+        ConnectorFactory.register_connector("elasticsearch", ElasticsearchConnector)
+        ConnectorFactory.register_connector("elastic", ElasticsearchConnector)
+    except ImportError:
+        logger.debug("Elasticsearch connector not available")
+
+    try:
+        # Import and register Neo4j connector (graph database, GRPH family)
+        from dimer.connectors.neo4j.connector import Neo4jConnector
+
+        ConnectorFactory.register_connector("neo4j", Neo4jConnector)
+    except ImportError:
+        logger.debug("Neo4j connector not available")
+
+    try:
+        # Import and register Qdrant connector (vector store, VEC family)
+        from dimer.connectors.qdrant.connector import QdrantConnector
+
+        ConnectorFactory.register_connector("qdrant", QdrantConnector)
+    except ImportError:
+        logger.debug("Qdrant connector not available")
+
+    try:
+        # Import and register InfluxDB connector (time-series store, TS family)
+        from dimer.connectors.influxdb.connector import InfluxDBConnector
+
+        ConnectorFactory.register_connector("influxdb", InfluxDBConnector)
+    except ImportError:
+        logger.debug("InfluxDB connector not available")
+
+    try:
         # Import and register file-based connectors
         from dimer.connectors.files.csv_connector import CSVConnector
         from dimer.connectors.files.parquet_connector import ParquetConnector

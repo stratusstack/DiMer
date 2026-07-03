@@ -285,6 +285,19 @@ manager.close_all()
 | Databricks | — | Databricks Connect → Native → SQLAlchemy |
 | CSV | — | pandas |
 | Parquet | — | PyArrow → pandas |
+| MongoDB | `mongo` | Native (pymongo) |
+| Redis (KV) | — | Native (redis-py) |
+| Cassandra (WIDE) | — | Native (cassandra-driver) |
+| Elasticsearch (SRCH) | `elastic` | Native (elasticsearch-py) |
+| Neo4j (GRPH) | — | Native (neo4j Bolt driver) |
+| Qdrant (VEC) | — | Native (qdrant-client) |
+| InfluxDB (TS) | — | Native (influxdb, InfluxQL) |
+
+MongoDB and the six non-relational families above have no SQL surface, so
+they support `FULL_FETCH_DIFF`, `HASH_DIFF`, `SCHEMA_DIFF`, `SAMPLED`,
+`BLOOM`, and `EMBEDDING_SIMILARITY` (via client-side primitives), but not
+`JOIN_DIFF` or `BISECTION` (no SQL joins, no aggregate-hash pushdown). See
+[ALGO.md](ALGO.md#non-sql-execution-path) for details.
 
 ---
 
