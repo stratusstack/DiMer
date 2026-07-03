@@ -13,6 +13,7 @@ from dimer.core.algorithms.base import (
     _build_hash_expr,
     _get_col_value,
     _python_row_hash,
+    _supports_sql,
     _validate_identifier,
 )
 from dimer.core.models import DiffAlgorithm, DiffResult, DiffRow, DiffRun, RowStatus
@@ -43,6 +44,35 @@ class HashDiffAlgorithm(BaseAlgorithm):
     Fetches are chunked into ``_WHERE_CHUNK_SIZE``-key batches to keep
     individual SQL statements within safe length limits.
     """
+
+    def _phase1_key_hashes(
+        self,
+        connector,
+        table: str,
+        safe_table: str,
+        keys: List[str],
+        non_key_cols: List[str],
+        case: str,
+    ) -> List[Dict[str, Any]]:
+        """Phase-1 narrow fetch: key columns + one ``_dimer_row_hash`` per row.
+
+        SQL connectors push the hash down via their DIALECTS; non-SQL
+        connectors (``SUPPORTS_SQL = False``) compute the same Python MD5
+        row hash client-side in ``fetch_key_hashes()``.
+        """
+        if not _supports_sql(connector):
+            return connector.fetch_key_hashes(table, keys, non_key_cols)
+
+        key_select = ", ".join(_validate_identifier(k, case) for k in keys)
+        if non_key_cols:
+            hash_expr = _build_hash_expr(
+                connector, [_validate_identifier(c, case) for c in non_key_cols]
+            )
+            sql = f"SELECT {key_select}, {hash_expr} AS _dimer_row_hash FROM {safe_table}"
+        else:
+            # No non-key columns — keys are the whole row; just fetch keys
+            sql = f"SELECT {key_select} FROM {safe_table}"
+        return self._query_rows(connector, sql)
 
     def run(self) -> DiffRun:
         start = time.time()
@@ -98,32 +128,13 @@ class HashDiffAlgorithm(BaseAlgorithm):
         # ----------------------------------------------------------------
         # Phase 1: narrow fetch — key columns + one hash per row
         # ----------------------------------------------------------------
-        key_select_a = ", ".join(_validate_identifier(k, case_a) for k in keys_a)
-        key_select_b = ", ".join(_validate_identifier(k, case_b) for k in keys_b)
-
-        if non_key_cols:
-            hash_expr_a = _build_hash_expr(
-                self._left_connector,
-                [_validate_identifier(c, case_a) for c in non_key_cols],
-            )
-            hash_expr_b = _build_hash_expr(
-                self._right_connector,
-                [_validate_identifier(c, case_b) for c in non_key_cols_b],
-            )
-            phase1_sql_a = (
-                f"SELECT {key_select_a}, {hash_expr_a} AS _dimer_row_hash FROM {safe_a}"
-            )
-            phase1_sql_b = (
-                f"SELECT {key_select_b}, {hash_expr_b} AS _dimer_row_hash FROM {safe_b}"
-            )
-        else:
-            # No non-key columns — keys are the whole row; just fetch keys
-            phase1_sql_a = f"SELECT {key_select_a} FROM {safe_a}"
-            phase1_sql_b = f"SELECT {key_select_b} FROM {safe_b}"
-
         logger.info("Phase 1: fetching key + row hash from both sources")
-        rows_p1_a = self._query_rows(self._left_connector, phase1_sql_a)
-        rows_p1_b = self._query_rows(self._right_connector, phase1_sql_b)
+        rows_p1_a = self._phase1_key_hashes(
+            self._left_connector, table_a, safe_a, keys_a, non_key_cols, case_a
+        )
+        rows_p1_b = self._phase1_key_hashes(
+            self._right_connector, table_b, safe_b, keys_b, non_key_cols_b, case_b
+        )
 
         count_a = len(rows_p1_a)
         count_b = len(rows_p1_b)

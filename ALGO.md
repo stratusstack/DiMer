@@ -1,6 +1,6 @@
 # DiMer Diff Algorithms
 
-DiMer implements five diff algorithms. Three are selected automatically based on context; two require explicit opt-in.
+DiMer implements seven diff algorithms. Three are selected automatically based on context; four require explicit opt-in.
 
 | Algorithm       | Selected when                              | Key characteristic                                      |
 | --------------- | ------------------------------------------ | ------------------------------------------------------- |
@@ -9,21 +9,28 @@ DiMer implements five diff algorithms. Three are selected automatically based on
 | `FULL_FETCH_DIFF` | Explicit fallback                          | Full table fetch into Python                            |
 | `BISECTION`     | Explicit opt-in                            | NTILE segment hashing; best for large tables            |
 | `SAMPLED`       | Explicit opt-in; cross-DB only             | Statistical sample — estimates diff rate with Wilson CI |
-|                 |                                            |                                                         |
+| `BLOOM`         | Explicit opt-in                            | Prefilter — cheap "definitely differs" signal; no Phase 2 fetch |
+| `EMBEDDING_SIMILARITY` | Explicit opt-in                     | Vector diff — same id, distance beyond tolerance = MODIFIED |
 
 ## Algorithm selection guide
 
 ```
-Same database instance?
-  └── Yes  →  JOIN_DIFF  (SQL JOINs; no data leaves the DB)
+use_embedding=True?  (vector columns, e.g. pgvector)
+  └── Yes  →  EMBEDDING_SIMILARITY  (per-id vector distance vs tolerance)
   └── No
-        └── use_bisection=True?
-              └── Yes  →  BISECTION  (NTILE hashing; best for very large tables)
+        └── use_bloom=True?
+              └── Yes  →  BLOOM  (prefilter; certain differences only, no detail fetch)
               └── No
-                    └── use_sampling=True?
-                          └── Yes  →  SAMPLED  (statistical sample; probabilistic answer)
-                          └── No   →  HASH_DIFF  (two-phase; default for cross-DB)
-                                          └── (for debugging / comparison: FULL_FETCH_DIFF)
+                    └── Same database instance?  (never true for non-SQL sources)
+                          └── Yes  →  JOIN_DIFF  (SQL JOINs; no data leaves the DB)
+                          └── No
+                                └── use_bisection=True?
+                                      └── Yes  →  BISECTION  (NTILE hashing; best for very large tables)
+                                      └── No
+                                            └── use_sampling=True?
+                                                  └── Yes  →  SAMPLED  (statistical sample; probabilistic answer)
+                                                  └── No   →  HASH_DIFF  (two-phase; default for cross-DB)
+                                                                  └── (for debugging / comparison: FULL_FETCH_DIFF)
 ```
 
 | Scenario | Recommended algorithm |
@@ -34,10 +41,34 @@ Same database instance?
 | Cross-DB, mixed DB types, < 1M rows | `HASH_DIFF` (automatic) |
 | Cross-DB, > 1M rows with localised changes | `BISECTION` (CLI auto-suggests; set `use_bisection=True`) |
 | Cross-DB, extremely large tables, probabilistic answer OK | `SAMPLED` (set `use_sampling=True`; does not detect ADDED rows) |
+| Quick "is a full diff even worth running?" check | `BLOOM` (set `use_bloom=True`; reports only certain differences) |
+| Vector/embedding columns (pgvector, vector stores) | `EMBEDDING_SIMILARITY` (set `use_embedding=True` + `vector_column`) |
 | Debugging / verifying HASH_DIFF results | `FULL_FETCH_DIFF` (call `compare_cross_database()` directly) |
 
 
 `FULL_FETCH_DIFF` is not selected automatically — it is available by calling `compare_cross_database()` directly.
+
+## Non-SQL (document-store) execution path
+
+Connectors that cannot execute SQL (currently MongoDB) declare
+`SUPPORTS_SQL = False` and expose data-access primitives that the algorithms
+call in place of generated SQL:
+
+| Primitive | Replaces | Used by |
+|---|---|---|
+| `count_rows(table)` | `SELECT COUNT(*)` | BISECTION*, SAMPLED |
+| `fetch_all_rows(table, columns)` | full `SELECT` | FULL_FETCH_DIFF, EMBEDDING_SIMILARITY |
+| `fetch_rows_by_keys(table, columns, key_dicts, key_cols)` | `WHERE (k=v) OR …` | HASH_DIFF Phase 2, SAMPLED target fetch |
+| `sample_rows(table, columns, n)` | `ORDER BY RANDOM() LIMIT n` | SAMPLED source |
+| `fetch_key_hashes(table, keys, non_key_cols)` | `SELECT keys, <hash>` | HASH_DIFF Phase 1, BLOOM |
+
+`fetch_key_hashes` computes the row hash client-side with the same Python MD5
+recipe used elsewhere for cross-database hashing, so two MongoDB sides are
+hash-comparable to each other (but never to a SQL engine's pushdown hash).
+
+`JOIN_DIFF` and `BISECTION` are unavailable for non-SQL sources: there are no
+SQL joins, and MongoDB has no server-side aggregate hash — a client-side
+bisection would fetch every row and add nothing over `HASH_DIFF`.
 
 ---
 
@@ -501,6 +532,134 @@ The margin of error depends only on `sample_size`, not on total table size (bino
 - When you need an exact diff (use `HASH_DIFF` or `BISECTION`)
 - When detecting ADDED rows in the target is a requirement
 - When the table is small enough for `HASH_DIFF` to complete quickly
+
+---
+
+## BLOOM
+
+**File:** `dimer/core/algorithms/bloom.py` → `BloomPrefilterAlgorithm`
+
+**Used when:** `use_bloom=True` is set in the config. The CLI offers it for
+cross-instance comparisons before the BISECTION/SAMPLED prompts.
+
+### Core idea
+
+A **prefilter**, not an exact diff. Fetch only `(key columns, row hash)` from
+each side — exactly HASH_DIFF Phase 1 — but instead of building key→hash
+dictionaries and running a Phase-2 row fetch, insert each side into Bloom
+filters and stream the opposite side through them:
+
+- a key that *misses* the opposite key-filter is **definitely** ADDED/DELETED
+  (Bloom filters have no false negatives);
+- a `key#hash` that misses the opposite key+hash filter (when hashes are
+  comparable) is **definitely** MODIFIED;
+- a *hit* may be a false positive, so up to `bloom_fpr` (default 1%) of truly
+  differing rows can be missed.
+
+The asymmetry is the point: every difference BLOOM reports is certain, but
+`match=True` only means "no differences detected" — run `HASH_DIFF` or
+`BISECTION` afterwards to prove parity.
+
+### Configuration
+
+| Key | Default | Meaning |
+|---|---|---|
+| `use_bloom` | — | explicit opt-in |
+| `bloom_fpr` | 0.01 | target false-positive rate; sizes the filters (~9.6 bits/row at 1%) |
+
+### Hash comparability
+
+Same rules as HASH_DIFF: same connector type → row hashes comparable →
+MODIFIED detectable. Different connector types → key membership only
+(ADDED/DELETED signal; `metadata["hash_comparable"] = False`). Non-SQL
+connectors compute the Python MD5 row hash client-side via
+`fetch_key_hashes()`, so two MongoDB sides are comparable.
+
+### Result semantics
+
+- `row_diffs` holds key-only `DiffRow`s capped at `MAX_DETAIL_ROWS` (no
+  column detail is ever fetched — that is what keeps it cheap).
+- `match=True` requires zero definite differences **and** equal row counts.
+- `DiffRun.metadata`: `prefilter`, `bloom_fpr`, `bloom_bits_per_side`,
+  `bloom_hash_count`, `hash_comparable`, `definite_added`,
+  `definite_deleted`, `definite_modified`.
+
+### Data transferred
+
+Identical to HASH_DIFF Phase 1 (keys + one hash per row) with **no Phase 2**.
+The filters themselves are ~1.2 KB per 1,000 rows at 1% FPR.
+
+### When it excels
+
+- Deciding cheaply whether a full diff is worth scheduling (UC5 heartbeats)
+- Very wide tables where even the Phase-2 candidate fetch would be expensive
+- Memory-constrained comparisons (no key→hash dictionaries are kept)
+
+### When not to use it
+
+- When you need exact counts or row detail (use `HASH_DIFF`)
+- When a guaranteed-complete difference list is required (FPs hide diffs)
+
+---
+
+## EMBEDDING_SIMILARITY
+
+**File:** `dimer/core/algorithms/embedding.py` → `EmbeddingSimilarityAlgorithm`
+
+**Used when:** `use_embedding=True` is set in the config (requires
+`vector_column`).
+
+### Core idea
+
+Vector stores need their own notion of "modified": two index builds can store
+the same logical embedding with float noise, so row-hash equality is
+meaningless. A row is MODIFIED when
+`distance(vec_source, vec_target) > distance_threshold` for the same id.
+
+Steps:
+
+1. Fetch `(keys, vector_column)` from both sides. On SQL sources the vector
+   column is cast to text via the dialect (pgvector's `'[…]'` literal parses
+   directly); non-SQL/vector connectors use `fetch_all_rows()`.
+2. ADDED / DELETED via key-set operations, as in other algorithms.
+3. For common ids, parse both vectors and compute the distance. Ids beyond
+   the threshold — or with unparseable / dimension-mismatched vectors — are
+   MODIFIED.
+
+### Configuration
+
+| Key | Default | Meaning |
+|---|---|---|
+| `use_embedding` | — | explicit opt-in |
+| `vector_column` | — (required) | column holding the embedding |
+| `distance_metric` | `cosine` | `cosine` (1 − cosine similarity) or `l2` (Euclidean) |
+| `distance_threshold` | `1e-3` | max tolerated distance before MODIFIED |
+
+### Result metadata
+
+`DiffRun.metadata`: `vector_column`, `distance_metric`, `distance_threshold`,
+`compared_pairs`, `max_distance`, `mean_distance`, `over_threshold`,
+`dimension_mismatches`, `parse_failures`. MODIFIED `DiffRow`s carry the
+distance in `source_values["_distance"]`.
+
+### Supported sources
+
+Works today against **pgvector through the PostgreSQL connector** and any SQL
+connector that can return the vector column as text. Dedicated vector-DB
+connectors (Pinecone, Milvus, Qdrant) plug in through the same non-SQL
+primitives as MongoDB and are still planned.
+
+### When it excels
+
+- Verifying a vector-store migration or re-index (same ids, same embeddings?)
+- Detecting embedding drift after a model or pipeline change
+- Any diff where float noise below a tolerance must count as "equal"
+
+### When not to use it
+
+- Non-vector data (use the standard algorithms)
+- When exact float equality matters (set the threshold to 0 — but HASH_DIFF
+  is then usually cheaper, since it pushes hashing down to the database)
 
 ---
 

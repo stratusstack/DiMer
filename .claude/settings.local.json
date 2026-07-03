@@ -8,7 +8,8 @@
       "Bash(head:*)",
       "Bash(pytest:*)",
       "Bash(python:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(source localenv/bin/activate)"
     ],
     "deny": [
       "Read(.env)",

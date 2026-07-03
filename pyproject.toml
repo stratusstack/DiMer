@@ -63,8 +63,21 @@ duckdb = [
     "duckdb>=0.9.0",
     "duckdb-engine>=0.9.0",
 ]
+# CockroachDB and YugabyteDB reuse the postgresql extra; TiDB reuses mysql.
+cockroachdb = [
+    "dimer[postgresql]",
+]
+yugabyte = [
+    "dimer[postgresql]",
+]
+tidb = [
+    "dimer[mysql]",
+]
+mongodb = [
+    "pymongo>=4.0.0",
+]
 all = [
-    "dimer[snowflake,postgresql,mysql,bigquery,databricks,duckdb]",
+    "dimer[snowflake,postgresql,mysql,bigquery,databricks,duckdb,mongodb]",
 ]
 dev = [
     "pytest>=7.0.0",

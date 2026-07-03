@@ -10,7 +10,9 @@ import structlog
 
 from dimer.core.algorithms import (
     BisectionAlgorithm,
+    BloomPrefilterAlgorithm,
     CrossDbDiffAlgorithm,
+    EmbeddingSimilarityAlgorithm,
     HashDiffAlgorithm,
     JoinDiffAlgorithm,
     SampledAlgorithm,
@@ -18,11 +20,15 @@ from dimer.core.algorithms import (
 from dimer.core.algorithms.base import (
     BISECTION_DEFAULT_SEGMENTS,
     BISECTION_DEFAULT_THRESHOLD,
+    BLOOM_DEFAULT_FPR,
     CROSS_DB_ROW_LIMIT,
+    EMBEDDING_DEFAULT_METRIC,
+    EMBEDDING_DEFAULT_THRESHOLD,
     MAX_DETAIL_ROWS,
     SAMPLED_DEFAULT_CONFIDENCE,
     SAMPLED_DEFAULT_SIZE,
     BaseAlgorithm,
+    _supports_sql,
 )
 from dimer.core.models import ComparisonConfig, DiffRun
 
@@ -36,6 +42,9 @@ __all__ = [
     "BISECTION_DEFAULT_THRESHOLD",
     "SAMPLED_DEFAULT_SIZE",
     "SAMPLED_DEFAULT_CONFIDENCE",
+    "BLOOM_DEFAULT_FPR",
+    "EMBEDDING_DEFAULT_METRIC",
+    "EMBEDDING_DEFAULT_THRESHOLD",
 ]
 
 
@@ -81,7 +90,13 @@ class Diffcheck:
     # ------------------------------------------------------------------
 
     def _is_same_instance(self) -> bool:
-        """True when both connectors point to the same host and database."""
+        """True when both connectors point to the same host and database.
+
+        JOIN_DIFF requires running SQL joins on one connection, so non-SQL
+        connectors (document stores) are never treated as same-instance.
+        """
+        if not (_supports_sql(self._left_connector) and _supports_sql(self._right_connector)):
+            return False
         return (
             self._left_connector.connection_config.host
             == self._right_connector.connection_config.host
@@ -105,6 +120,16 @@ class Diffcheck:
     def compare(self) -> DiffRun:
         """Choose the appropriate comparison strategy and run the diff."""
         logger.info("Starting table comparison")
+
+        # Embedding similarity is an explicit opt-in (vector sources)
+        if self._left_config.get('use_embedding') or self._right_config.get('use_embedding'):
+            logger.info("Embedding-similarity algorithm selected — per-id vector distance")
+            return self._make_algorithm(EmbeddingSimilarityAlgorithm).run()
+
+        # Bloom prefilter is an explicit opt-in (cheap "definitely differs" signal)
+        if self._left_config.get('use_bloom') or self._right_config.get('use_bloom'):
+            logger.info("Bloom prefilter selected — probabilistic membership check")
+            return self._make_algorithm(BloomPrefilterAlgorithm).run()
 
         # Bisection is an explicit opt-in (checked before instance routing)
         if self._left_config.get('use_bisection') or self._right_config.get('use_bisection'):
