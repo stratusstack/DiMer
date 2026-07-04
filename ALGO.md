@@ -62,6 +62,7 @@ use_embedding=True?  (vector columns, e.g. pgvector)
 | Cheap first-pass triage before committing to a row-level diff | `PROFILE_DIFF` (set `use_profile_diff=True`; one aggregation scan/side, no keys needed) |
 | Same triage, but tables are huge and exact `COUNT(DISTINCT)` is too slow | `SKETCH_DIFF` (set `use_sketch_diff=True`; native HLL-family sketch where the engine has one) |
 | Debugging / verifying HASH_DIFF results | `FULL_FETCH_DIFF` (call `compare_cross_database()` directly) |
+| Tabular data files — CSV/TSV (DELIM) or Parquet (COLF), incl. cross-format (UC6) | `FULL_FETCH_DIFF` (call `compare_cross_database()` directly; files are read in full regardless of algorithm) |
 
 
 `FULL_FETCH_DIFF` is not selected automatically — it is available by calling `compare_cross_database()` directly.
@@ -104,13 +105,29 @@ MongoDB (DOC):
 | GRPH (graph) | `dimer/connectors/neo4j` | node label | `elementId(n)` (`_id`) | real catalog (`db.schema.nodeTypeProperties()`), sampled fallback |
 | VEC (vector store) | `dimer/connectors/qdrant` | collection name | point `id` (`_id`) | real vector config + sampled payload inference |
 | TS (time-series) | `dimer/connectors/influxdb` | measurement name | point `time` | real catalog (`SHOW FIELD KEYS` / `SHOW TAG KEYS`) |
+| DELIM (delimited files) | `dimer/connectors/files/csv_connector` | file name (without extension) | user-chosen key columns | sampled pandas dtype inference |
+| COLF (columnar files) | `dimer/connectors/files/parquet_connector` | file name (without extension) | user-chosen key columns | real embedded schema (PyArrow/Parquet footer) |
 
 Each follows the MongoDB template exactly: `SUPPORTS_SQL = False`,
 `DIALECTS = {}`, the five primitives above implemented against the engine's
 native client, and `get_table_metadata()` built from whichever schema source
 the engine actually has — a real catalog where one exists (Cassandra,
-Elasticsearch, Neo4j's node-type-properties procedure, InfluxDB), sampled
-inference where the store is genuinely schemaless (Redis, Qdrant payloads).
+Elasticsearch, Neo4j's node-type-properties procedure, InfluxDB, Parquet's
+embedded schema), sampled inference where the store is genuinely schemaless
+(Redis, Qdrant payloads, CSV headers + dtype sniffing).
+
+**Tabular files (UC6):** the CSV and Parquet connectors carry only a minimal
+`SELECT … FROM … LIMIT n` parser (no `WHERE`, `ORDER BY`, or hash
+functions), so they cannot execute the SQL the pushdown algorithms generate.
+They share `TabularFileDiffMixin`
+(`dimer/connectors/files/tabular_diff.py`), which implements all five
+primitives on top of a single per-connector `_read_table_df()` (pandas /
+PyArrow full read). Values are normalised on the way out (`NaN` → `None`,
+NumPy scalars → native Python), so CSV↔CSV, Parquet↔Parquet, and even
+CSV↔Parquet diffs compare cleanly. Since every primitive reads the file in
+full anyway, `FULL_FETCH_DIFF` is the natural fit for file diffs;
+`HASH_DIFF`/`BLOOM`/`SAMPLED` also work but offer no I/O savings over it —
+their value is limited to memory shape, not bytes read.
 
 ---
 
@@ -283,6 +300,10 @@ For a 1 M-row table with 30 columns and 500 modifications:
 **File:** `dimer/core/compare.py` → `compare_cross_database()`
 
 **Used when:** called directly. Not selected automatically (superseded by `HASH_DIFF`).
+It is the recommended algorithm for tabular data files (UC6 — CSV/TSV and
+Parquet): the file connectors read files in full for every primitive anyway,
+so `HASH_DIFF`'s narrow Phase 1 saves nothing there, while `FULL_FETCH_DIFF`
+does the whole comparison in one pass per side.
 
 ### How it works
 
@@ -735,6 +756,8 @@ Both sides are read through the connector's existing `get_table_metadata()`:
 | GRPH (Neo4j) | real catalog — `db.schema.nodeTypeProperties()`, sampled fallback |
 | VEC (Qdrant) | real vector config + sampled payload-field inference |
 | TS (InfluxDB) | real catalog — `SHOW FIELD KEYS` / `SHOW TAG KEYS` |
+| DELIM (CSV) | headers + sampled pandas dtype inference (first 100 rows) |
+| COLF (Parquet) | real embedded schema — PyArrow/Parquet file footer |
 
 ### What is compared
 

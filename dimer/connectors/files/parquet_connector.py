@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import structlog
 
+from dimer.connectors.files.tabular_diff import TabularFileDiffMixin
 from dimer.core.base import DataSourceConnector
 from dimer.core.models import (
     ColumnMetadata,
@@ -19,8 +20,14 @@ from dimer.core.types import DataTypeMapper
 logger = structlog.get_logger(__name__)
 
 
-class ParquetConnector(DataSourceConnector):
-    """Parquet file connector with multiple access strategies."""
+class ParquetConnector(TabularFileDiffMixin, DataSourceConnector):
+    """Parquet file connector with multiple access strategies.
+
+    COLF family (UC6): declares ``SUPPORTS_SQL = False`` via
+    ``TabularFileDiffMixin``, so diffs run through the client-side non-SQL
+    primitives (FULL_FETCH_DIFF, HASH_DIFF, SAMPLED, BLOOM) rather than
+    generated SQL, which the minimal file query parser cannot execute.
+    """
 
     # Parquet-specific configuration
     DEFAULT_ENGINE = "pyarrow"
@@ -177,6 +184,34 @@ class ParquetConnector(DataSourceConnector):
         )
 
         return connection_info
+
+    def _read_table_df(self, table_name: str) -> pd.DataFrame:
+        """Load the named Parquet file(s) fully into a DataFrame (diff primitives, UC6)."""
+        if not self.connection:
+            self.connect()
+
+        if self.connection_method_used == ConnectionMethod.PYARROW_DIRECT:
+            dataset = self.connection["dataset"]
+            matching = [f for f in dataset.files if table_name in os.path.basename(f)]
+            if matching and len(matching) != len(dataset.files):
+                import pyarrow.dataset as ds
+
+                dataset = ds.dataset(matching)
+            return dataset.to_table().to_pandas()
+
+        files = self.connection["files"]
+        engine = self.connection["engine"]
+        matching = [f for f in files if table_name in os.path.basename(f)] or files
+
+        dfs = []
+        for file_path in matching:
+            try:
+                dfs.append(pd.read_parquet(file_path, engine=engine))
+            except Exception as e:
+                logger.warning(f"Failed to read file {file_path}: {e}")
+        if not dfs:
+            return pd.DataFrame()
+        return pd.concat(dfs, ignore_index=True)
 
     def _execute_query_internal(
         self, query: str, params: Optional[Dict] = None

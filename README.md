@@ -293,10 +293,15 @@ manager.close_all()
 | Qdrant (VEC) | — | Native (qdrant-client) |
 | InfluxDB (TS) | — | Native (influxdb, InfluxQL) |
 
-MongoDB and the six non-relational families above have no SQL surface, so
-they support `FULL_FETCH_DIFF`, `HASH_DIFF`, `SCHEMA_DIFF`, `SAMPLED`,
-`BLOOM`, and `EMBEDDING_SIMILARITY` (via client-side primitives), but not
-`JOIN_DIFF` or `BISECTION` (no SQL joins, no aggregate-hash pushdown). See
+MongoDB, the six non-relational families above, and the tabular file
+connectors (CSV — DELIM family, Parquet — COLF family) have no real SQL
+surface, so they support `FULL_FETCH_DIFF`, `HASH_DIFF`, `SCHEMA_DIFF`,
+`SAMPLED`, `BLOOM`, and `EMBEDDING_SIMILARITY` (via client-side
+primitives), but not `JOIN_DIFF` or `BISECTION` (no SQL joins, no
+aggregate-hash pushdown). For file-to-file diffs (UC6), `FULL_FETCH_DIFF`
+via `compare_cross_database()` is the natural choice — every algorithm
+reads the files in full anyway, so the pushdown algorithms offer no I/O
+savings. CSV↔Parquet cross-format diffs are supported. See
 [ALGO.md](ALGO.md#non-sql-execution-path) for details.
 
 ---
