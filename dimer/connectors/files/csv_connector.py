@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import structlog
 
+from dimer.connectors.files.tabular_diff import TabularFileDiffMixin
 from dimer.core.base import DataSourceConnector
 from dimer.core.models import (
     ColumnMetadata,
@@ -18,8 +19,14 @@ from dimer.core.models import (
 logger = structlog.get_logger(__name__)
 
 
-class CSVConnector(DataSourceConnector):
-    """CSV file connector with multiple access strategies."""
+class CSVConnector(TabularFileDiffMixin, DataSourceConnector):
+    """CSV file connector with multiple access strategies.
+
+    DELIM family (UC6): declares ``SUPPORTS_SQL = False`` via
+    ``TabularFileDiffMixin``, so diffs run through the client-side non-SQL
+    primitives (FULL_FETCH_DIFF, HASH_DIFF, SAMPLED, BLOOM) rather than
+    generated SQL, which the minimal file query parser cannot execute.
+    """
 
     # CSV-specific configuration
     SUPPORTED_EXTENSIONS = [".csv", ".tsv", ".txt"]
@@ -157,6 +164,25 @@ class CSVConnector(DataSourceConnector):
             params["sep"] = "\t"
 
         return params
+
+    def _read_table_df(self, table_name: str) -> pd.DataFrame:
+        """Load the named CSV file(s) fully into a DataFrame (diff primitives, UC6)."""
+        if not self.connection:
+            self.connect()
+
+        files = self.connection["files"]
+        csv_params = self.connection["csv_params"]
+        matching = [f for f in files if table_name in os.path.basename(f)] or files
+
+        dfs = []
+        for file_path in matching:
+            try:
+                dfs.append(pd.read_csv(file_path, **csv_params))
+            except Exception as e:
+                logger.warning(f"Failed to read file {file_path}: {e}")
+        if not dfs:
+            return pd.DataFrame()
+        return pd.concat(dfs, ignore_index=True)
 
     def _execute_query_internal(
         self, query: str, params: Optional[Dict] = None
