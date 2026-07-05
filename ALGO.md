@@ -1077,3 +1077,70 @@ side has no median capability at all — currently only MySQL).
 
 ---
 
+
+## VALUE_SEARCH
+
+**Use case:** UC10 — value search in a database (membership with occurrence
+explanation). Implemented for SQL sources; validated for REL (PostgreSQL,
+MySQL) and DWH (Snowflake, BigQuery, Databricks, DuckDB); NSQL inherits
+through the wire-compatible connectors. Not a diff: no join keys, no
+added/deleted/modified semantics.
+
+### Core idea
+
+Take the distinct values of one column in a **source** table and determine
+whether/where they appear across a **target** table's columns, reporting per-
+(value, column) occurrence counts, per-column rollups (which target column
+most likely corresponds to the source column), and bounded evidence rows.
+
+Entry point is a separate facade — `ValueSearch` in `dimer/core/search.py`
+(mirroring `Diffcheck`); the implementation is
+`dimer/core/algorithms/value_search.py`; the result is a `SearchRun`
+(`SearchMatch` / `SearchColumnStat` detail models), not a `DiffRun`.
+
+### Matching modes
+
+| Mode | Semantics | SQL shape (per target column) | Cost profile |
+|---|---|---|---|
+| `EXACT` | value equals the target cell (text-cast) | `SELECT CAST(col AS TEXT), COUNT(*) FROM t WHERE CAST(col AS TEXT) IN (…500-value chunks…) GROUP BY 1` | index-friendly; one scan per chunk |
+| `PATTERN` | value appears anywhere inside the cell | `SELECT SUM(CASE WHEN CAST(col AS TEXT) LIKE '%v%' THEN 1 ELSE 0 END), … FROM t` (50-value chunks) | always a full column scan |
+
+Fuzzy / phonetic / semantic modes are backlog (need UDFs, extensions, or
+embedding infrastructure — see `TODO_FOR_LATER.md` §Value search & membership).
+
+### How it works
+
+1. **Fetch source values** — `SELECT DISTINCT CAST(col AS TEXT) … WHERE col
+   IS NOT NULL LIMIT max_values + 1` on the source engine (default cap
+   1,000; the extra row detects truncation, surfaced as
+   `metadata['source_values_truncated']`).
+2. **Resolve target columns** — target catalog metadata, optionally filtered
+   by `target_columns`; columns whose normalised type has no text-equality
+   semantics (`binary`, `json`, `array`, `object`, `variant`, `vector`) are
+   skipped and reported in `metadata['columns_skipped']`.
+3. **Search each column** — pushdown per the mode table above. Both sides of
+   every comparison are text-cast via the connector's `cast_to_text` dialect
+   template, so values match across type boundaries (an integer id column
+   matches a varchar reference column).
+4. **Explain** — matches sorted by occurrence count; per-column
+   `SearchColumnStat` with `hit_rate` (values matched ÷ values searched);
+   evidence rows (`SELECT * … LIMIT 3`) fetched for the top 10 matches;
+   values not found anywhere listed (capped at 50, full count in metadata).
+
+### Data transferred
+
+Only distinct source values out of the source engine, and matched
+value/count pairs plus a handful of evidence rows out of the target engine.
+No full-table fetches.
+
+### Caveats
+
+- Text rendering of non-string types is engine-specific, so cross-engine
+  searches on dates/floats/booleans may miss (e.g. `true` vs `1`). Same-
+  engine and string-column searches are unaffected.
+- In `PATTERN` mode, `%`/`_` inside source values act as LIKE wildcards — an
+  `ESCAPE` clause is not portable across all supported engines (BigQuery in
+  particular), so values are embedded as-is.
+- `CHAR(n)` blank padding and case sensitivity follow each engine's own
+  text-equality semantics.
+- Search runs are not persisted yet (`search_run` tables are backlog).

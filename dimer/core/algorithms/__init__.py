@@ -11,6 +11,7 @@ from dimer.core.algorithms.profile_diff import ProfileDiffAlgorithm
 from dimer.core.algorithms.sampled import SampledAlgorithm
 from dimer.core.algorithms.schema_diff import SchemaDiffAlgorithm
 from dimer.core.algorithms.sketch_diff import SketchDiffAlgorithm
+from dimer.core.algorithms.value_search import ValueSearchAlgorithm
 
 __all__ = [
     "BaseAlgorithm",
@@ -25,4 +26,5 @@ __all__ = [
     "SampledAlgorithm",
     "SchemaDiffAlgorithm",
     "SketchDiffAlgorithm",
+    "ValueSearchAlgorithm",
 ]

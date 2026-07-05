@@ -21,7 +21,16 @@ from dimer.core.compare import (
     SKETCH_DEFAULT_RELATIVE_TOLERANCE,
 )
 from dimer.core.factory import ConnectorFactory
-from dimer.core.models import ComparisonConfig, DiffAlgorithm, DiffRun, ConnectionConfig, TableMetadata
+from dimer.core.models import (
+    ComparisonConfig,
+    ConnectionConfig,
+    DiffAlgorithm,
+    DiffRun,
+    SearchMode,
+    SearchRun,
+    TableMetadata,
+)
+from dimer.core.search import VALUE_SEARCH_DEFAULT_MAX_VALUES, ValueSearch
 
 # ---------------------------------------------------------------------------
 # Logging configuration
@@ -790,6 +799,158 @@ def prompt_sampling() -> "Tuple[bool, int, float]":
 
 
 # ---------------------------------------------------------------------------
+# Value search prompts (UC10)
+# ---------------------------------------------------------------------------
+
+
+def prompt_task() -> str:
+    """Ask whether to run a diff or a value search. Returns 'diff' or 'search'."""
+    print(f"\n  {_bold('Task:')}")
+    print(f"    {_cyan('1')}. {_bold('Data diff')}     {_dim('— compare two assets (rows, schema, or aggregates)')}")
+    print(f"    {_cyan('2')}. {_bold('Value search')}  {_dim('— find where one column values occur in another table')}")
+    raw = input("  Enter number (1-2) [1]: ").strip()
+    return "search" if raw == "2" else "diff"
+
+
+def prompt_match_mode() -> SearchMode:
+    """Ask which matching type to use for a value search.
+
+    Shows a one-liner per mode so the user can weigh precision vs cost.
+    """
+    print(f"\n  {_bold('Matching type:')}")
+    print(f"    {_cyan('1')}. {_bold('EXACT')}    {_dim('— value must equal a target cell exactly (pushdown IN semi-join; fast, index-friendly)')}")
+    print(f"    {_cyan('2')}. {_bold('PATTERN')}  {_dim('— value matches anywhere inside a target cell (LIKE %value%; full column scan, slower)')}")
+    raw = input("  Enter number (1-2) [1]: ").strip()
+    return SearchMode.PATTERN if raw == "2" else SearchMode.EXACT
+
+
+def run_value_search(connector1, src1: str, connector2, src2: str) -> None:
+    """Interactive UC10 flow: prompt, run the search, and display the result.
+
+    Target 1 is the *source of values*; Target 2 is the table searched.
+    """
+    if not (getattr(connector1, "SUPPORTS_SQL", True) and getattr(connector2, "SUPPORTS_SQL", True)):
+        print(f"\n  {_red('✗')}  Value search requires SQL sources on both sides "
+              f"(non-SQL connectors are not supported yet).")
+        return
+
+    print(f"\n  {_dim('Target 1 provides the values; Target 2 is searched for them.')}")
+    fq_source = prompt_fq_table(src1, "Target 1 (source of values)")
+
+    source_column = ""
+    while not source_column:
+        source_column = input("    Column whose values to search for: ").strip()
+        if not source_column:
+            print(f"    {_red('A source column is required.')}")
+
+    fq_target = prompt_fq_table(src2, "Target 2 (searched table)")
+
+    raw_cols = input(
+        f"    Target columns to search {_dim('(comma-separated; empty = all searchable columns)')}: "
+    ).strip()
+    target_columns = [c.strip() for c in raw_cols.split(",") if c.strip()] or None
+
+    mode = prompt_match_mode()
+
+    raw_max = input(
+        f"  Max distinct source values [{_dim(str(VALUE_SEARCH_DEFAULT_MAX_VALUES))}]: "
+    ).strip()
+    max_values = (
+        int(raw_max) if raw_max.isdigit() and int(raw_max) > 0
+        else VALUE_SEARCH_DEFAULT_MAX_VALUES
+    )
+
+    # Confirmation summary
+    print()
+    print("  " + "─" * 54)
+    print(f"  Values  : {_cyan(src1):<20} {_bold(fq_source)}.{_bold(source_column)}")
+    print(f"  Search  : {_cyan(src2):<20} {_bold(fq_target)}"
+          f"  ({', '.join(target_columns) if target_columns else 'all searchable columns'})")
+    print(f"  Mode    : {mode}  (max {max_values:,} values)")
+    print("  " + "─" * 54)
+
+    ans = input("\n  Run search? [Y/n]: ").strip().lower()
+    if ans not in ("", "y", "yes"):
+        print(_dim("  Skipped."))
+        return
+
+    print("\n  Running value search...", flush=True)
+    try:
+        run = ValueSearch(
+            connector1,
+            connector2,
+            {"fq_table_name": fq_source, "source_column": source_column, "max_values": max_values},
+            {"fq_table_name": fq_target, **({"target_columns": target_columns} if target_columns else {})},
+            mode=mode,
+        ).search()
+        display_search_result(run)
+        print(f"  {_dim('Search runs are not persisted yet (search_run tables are on the backlog).')}")
+    except Exception as exc:
+        print(f"\n  {_red('✗  Value search failed:')} {exc}")
+        if _DEV_MODE:
+            traceback.print_exc()
+
+
+def display_search_result(run: SearchRun) -> None:
+    """Print a human-readable summary of a SearchRun."""
+    print()
+    print("  " + "─" * 54)
+
+    if run.error:
+        print(f"  {_red('✗  ERROR')}  {run.error}")
+        print("  " + "─" * 54)
+        return
+
+    if run.values_found == run.values_searched:
+        headline = _green(f"✓  ALL {run.values_searched:,} values found")
+    elif run.values_found:
+        headline = _yellow(f"◐  {run.values_found:,} of {run.values_searched:,} values found")
+    else:
+        headline = _red(f"✗  none of {run.values_searched:,} values found")
+    print(f"  {headline}  in {_bold(run.target_table)}")
+
+    print(f"  Mode           : {run.mode}")
+    if run.execution_time_seconds is not None:
+        print(f"  Elapsed        : {run.execution_time_seconds:.2f}s")
+    m = run.metadata or {}
+    truncated_note = _dim(" (value cap hit — results are a lower bound)") if m.get("source_values_truncated") else ""
+    print(f"  Source values  : {run.values_searched:,} distinct from "
+          f"{run.source_table}.{run.source_column}{truncated_note}")
+    skipped = m.get("columns_skipped") or []
+    skipped_note = _dim(f" (skipped unsearchable: {', '.join(skipped)})") if skipped else ""
+    print(f"  Columns        : {len(run.columns_searched)} searched{skipped_note}")
+
+    hit_stats = [s for s in run.column_stats if s.values_matched]
+    if hit_stats:
+        print(f"\n  {_bold('Per-column hits')} {_dim('(highest hit-rate column likely corresponds to the source column)')}")
+        print(f"  {'Column':<28} {'Values matched':>14} {'Occurrences':>12} {'Hit rate':>9}")
+        print(f"  {'─'*28} {'─'*14} {'─'*12} {'─'*9}")
+        for s in hit_stats[:10]:
+            print(f"  {s.column:<28} {s.values_matched:>14,} {s.total_occurrences:>12,} {s.hit_rate:>8.0%}")
+
+    if run.matches:
+        show = run.matches[:10]
+        print(f"\n  {_bold('Top matches')} (showing {len(show)} of {len(run.matches)}):")
+        for match in show:
+            print(f"    {_bold(match.value)} → {match.column}  ×{match.occurrence_count:,}")
+        evidenced = [mt for mt in show if mt.evidence_rows]
+        if evidenced:
+            first = evidenced[0]
+            row = first.evidence_rows[0]
+            sample = ", ".join(f"{k}={v}" for k, v in list(row.items())[:6])
+            print(f"  {_dim('Evidence (first row for ' + first.value + ' in ' + first.column + '): ' + sample)}")
+
+    if run.values_not_found:
+        total_missing = m.get("values_not_found_count", len(run.values_not_found))
+        shown = ", ".join(run.values_not_found[:8])
+        suffix = ", ..." if total_missing > 8 else ""
+        print(f"\n  {_yellow('Not found')} ({total_missing:,} values): {shown}{suffix}")
+
+    print()
+    print("  " + "─" * 54)
+
+
+# ---------------------------------------------------------------------------
 # Result display
 # ---------------------------------------------------------------------------
 
@@ -1145,6 +1306,13 @@ def main() -> None:
         # ── Step 4: Comparison loop ───────────────────────────────────────────
         while True:
             print(_bold("\n── Step 4: Asset comparison ───────────────────────────────"))
+
+            if prompt_task() == "search":
+                run_value_search(connector1, src1, connector2, src2)
+                ans = input("\n  Run another comparison or search? [Y/n]: ").strip().lower()
+                if ans not in ("", "y", "yes"):
+                    break
+                continue
 
             fq1 = prompt_fq_table(src1, "Target 1")
             fq2 = prompt_fq_table(src2, "Target 2")
