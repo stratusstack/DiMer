@@ -62,6 +62,16 @@ class RowStatus(Enum):
     MODIFIED = "modified"  # exists in both but column values differ
 
 
+class SearchMode(str, Enum):
+    """Matching mode for a value search (UC10/UC11).
+
+    Inherits from ``str`` for the same reason as ``DiffAlgorithm``.
+    """
+
+    EXACT = "EXACT"      # value must equal the target cell (text-cast); pushdown IN semi-join
+    PATTERN = "PATTERN"  # value matches anywhere inside the target cell (LIKE '%value%')
+
+
 @dataclass
 class ColumnMetadata:
     """Metadata for a database column."""
@@ -258,6 +268,86 @@ class SketchDiffConfig(ComparisonConfig, total=False):
     use_sketch_diff: bool           # explicit opt-in flag
     sketch_columns: List[str]       # subset of common columns to profile (default: all)
     sketch_relative_tolerance: float  # relative tolerance for estimate comparison (default: 0.05)
+
+
+class ValueSearchSourceConfig(TypedDict, total=False):
+    """Configuration for the *source* side of a value search (UC10).
+
+    The source provides the values: distinct non-null values of
+    ``source_column`` are fetched (text-cast, capped at ``max_values``) and
+    then searched across the target table's columns.
+    """
+
+    fq_table_name: str   # required
+    source_column: str   # required — column whose values are searched for
+    max_values: int      # cap on distinct values fetched (default: 1000)
+
+
+class ValueSearchTargetConfig(TypedDict, total=False):
+    """Configuration for the *target* side of a value search (UC10)."""
+
+    fq_table_name: str          # required
+    target_columns: List[str]   # subset of columns to search (default: all searchable columns)
+
+
+# ---------------------------------------------------------------------------
+# Value search result models  (SearchMatch / SearchColumnStat / SearchRun)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SearchMatch:
+    """One (source value → target column) hit with its occurrence count.
+
+    ``evidence_rows`` holds up to a bounded number of full target rows in
+    which the match occurred (populated only for the top matches, mirroring
+    the ``MAX_DETAIL_ROWS`` pattern for diffs).
+    """
+
+    value: str
+    column: str
+    occurrence_count: int
+    match_mode: SearchMode
+    evidence_rows: List[Dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class SearchColumnStat:
+    """Aggregate hits for one target column across all searched values.
+
+    ``hit_rate`` (values_matched / values_searched) surfaces which target
+    column most likely corresponds to the source column.
+    """
+
+    column: str
+    values_matched: int      # distinct source values found in this column
+    total_occurrences: int   # sum of occurrence counts in this column
+    hit_rate: float
+
+
+@dataclass
+class SearchRun:
+    """Complete result of a single value search run (UC10).
+
+    Not a diff: there is no added/deleted/modified semantics.  ``matches``
+    is the per-(value, column) detail, ``column_stats`` the per-column
+    rollup, and ``values_not_found`` the source values with no hit in any
+    searched column (capped — see ``metadata['values_not_found_truncated']``).
+    """
+
+    source_table: str
+    source_column: str
+    target_table: str
+    mode: SearchMode
+    values_searched: int = 0
+    values_found: int = 0
+    columns_searched: List[str] = field(default_factory=list)
+    column_stats: List[SearchColumnStat] = field(default_factory=list)
+    matches: List[SearchMatch] = field(default_factory=list)
+    values_not_found: List[str] = field(default_factory=list)
+    error: Optional[str] = None
+    execution_time_seconds: Optional[float] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
