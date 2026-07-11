@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS project (
     description TEXT
 );
 
-CREATE TABLE IF NOT EXISTS "user" (
+CREATE TABLE IF NOT EXISTS user_profile (
     user_id    TEXT PRIMARY KEY,
     email      TEXT UNIQUE,
     name       TEXT NOT NULL,
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS project_source (
     host        TEXT,
     port        INTEGER,
     db_name     TEXT,
-    user_id     TEXT REFERENCES "user"(user_id),
+    user_id     TEXT REFERENCES user_profile(user_id),
     UNIQUE (project_id, source_type, source_name)
 );
 
@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS diff_run_detail (
     source_b_row_count  INTEGER,
     common_columns      TEXT,               -- JSON array
     schema_differences  TEXT,               -- JSON object
-    columns_not_matched TEXT                -- JSON object {source_only: [], target_only: []}
+    columns_not_matched TEXT                -- JSON object {source_a_only: [], source_b_only: []}
 );
 
 CREATE TABLE IF NOT EXISTS diff_result (

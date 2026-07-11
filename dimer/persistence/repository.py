@@ -159,10 +159,10 @@ def ensure_defaults(db: DimerDB) -> Tuple[str, str]:
         )
 
     if not db.fetchone(
-        'SELECT user_id FROM "user" WHERE user_id = ?', (_DEFAULT_USER_ID,)
+        "SELECT user_id FROM user_profile WHERE user_id = ?", (_DEFAULT_USER_ID,)
     ):
         db.execute(
-            'INSERT INTO "user" (user_id, name, email, local_cli) VALUES (?, ?, ?, ?)',
+            "INSERT INTO user_profile (user_id, name, email, local_cli) VALUES (?, ?, ?, ?)",
             (_DEFAULT_USER_ID, _DEFAULT_USER_NAME, None, 1),
         )
 
@@ -350,9 +350,9 @@ def _extract_columns_not_matched(schema_diff: Optional[Dict]) -> Optional[Dict]:
         return None
     result: Dict[str, Any] = {}
     if schema_diff.get("columns_only_in_a"):
-        result["source_only"] = schema_diff["columns_only_in_a"]
+        result["source_a_only"] = schema_diff["columns_only_in_a"]
     if schema_diff.get("columns_only_in_b"):
-        result["target_only"] = schema_diff["columns_only_in_b"]
+        result["source_b_only"] = schema_diff["columns_only_in_b"]
     return result or None
 
 

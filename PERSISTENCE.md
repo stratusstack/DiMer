@@ -2,6 +2,8 @@
 
 DiMer's optional persistence layer saves diff history. It runs on either **SQLite** (local, default at `~/.dimer/dimer.db`) or **PostgreSQL** (production, set via `DIMER_DB_URL`). Both backends share the same 8-table logical schema; only the column types differ.
 
+> **Terminology — source vs target.** Tables use the **A/B** convention (`source_a_*`, `source_b_*`), while the domain models ([models.py](dimer/core/models.py)) use **source/target** (`source_values`, `target_row_count`, …). These are the same two things: *source* = source A = left side, *target* = source B = right side. "Target" is only a label for the second comparison input — a diff is read-only on both sides; nothing is ever written to a target destination.
+
 > **Sources:** [sqlite_schema.sql](dimer/persistence/sql/sqlite_schema.sql) · [postgres_schema.sql](dimer/persistence/sql/postgres_schema.sql) · [repository.py](dimer/persistence/repository.py) · [models.py](dimer/core/models.py)
 
 ---
@@ -11,7 +13,7 @@ DiMer's optional persistence layer saves diff history. It runs on either **SQLit
 | Table              | SQLite | PostgreSQL |
 |--------------------|:------:|:----------:|
 | `project`          | ✓      | ✓          |
-| `user`             | ✓      | ✓          |
+| `user_profile`     | ✓      | ✓          |
 | `project_source`   | ✓      | ✓          |
 | `diff_job`         | ✓      | ✓          |
 | `diff_run`         | ✓      | ✓          |
@@ -29,7 +31,7 @@ All 8 tables are defined in both backends with the same columns and relationship
 erDiagram
     project ||--o{ project_source : "owns"
     project ||--o{ diff_job       : "scopes"
-    user    ||--o{ project_source : "owns credentials"
+    user_profile ||--o{ project_source : "owns credentials"
 
     project_source ||--o{ diff_job : "source A"
     project_source ||--o{ diff_job : "source B"
@@ -44,7 +46,7 @@ erDiagram
         TEXT  name
         TEXT  description
     }
-    user {
+    user_profile {
         UUID    user_id    PK
         TEXT    email      UK
         TEXT    name
@@ -115,7 +117,7 @@ erDiagram
 ### Relationship summary
 
 - A **project** groups one or more **project_sources** (database connections) and **diff_jobs** (comparison configurations).
-- A **user** can own credentials for many project_sources. The CLI auto-creates a single `local_cli=true` user.
+- A **user_profile** can own credentials for many project_sources. The CLI auto-creates a single `local_cli=true` user.
 - A **diff_job** pins *two* `project_source` references (A and B) plus the table + key columns being compared. It is the immutable contract for repeat runs.
 - Each **diff_run** is one execution of a `diff_job`. It fans out to exactly one **diff_run_detail** (historical asset metadata), one **diff_result** (aggregate counts), and zero-or-more **diff_row** entries (individual differing rows, capped by `MAX_DETAIL_ROWS`).
 
@@ -135,9 +137,9 @@ Groups sources and jobs under a logical workspace. The CLI seeds a default proje
 | `name`        | `TEXT` / `VARCHAR`    | NOT NULL    | Display name. |
 | `description` | `TEXT` / `TEXT`       | nullable    | Free-form notes. |
 
-### 3.2 `user`
+### 3.2 `user_profile`
 
-Owner of credentials for a `project_source`. Table name is quoted (`"user"`) because it is reserved in PostgreSQL.
+Owner of credentials for a `project_source`. Named `user_profile` (not `user`) because `user` is a reserved word in PostgreSQL and would need quoting everywhere.
 
 | Column      | Type                  | Constraints     | Description |
 |-------------|-----------------------|-----------------|-------------|
@@ -159,7 +161,7 @@ A connection definition (host/port/db) plus a human label, scoped to a project.
 | `host`        | `TEXT` / `VARCHAR`  | nullable    | Hostname (omitted for file sources). |
 | `port`        | `INTEGER` / `INTEGER` | nullable  | TCP port. |
 | `db_name`     | `TEXT` / `VARCHAR`  | nullable    | Database/catalog name. |
-| `user_id`     | `TEXT` / `UUID`     | FK → `user` | Credential owner. |
+| `user_id`     | `TEXT` / `UUID`     | FK → `user_profile` | Credential owner. |
 |               |                     | UNIQUE      | `(project_id, source_type, source_name)` — `get_or_create_project_source` matches on this. |
 
 ### 3.4 `diff_job`
@@ -193,7 +195,7 @@ One execution of a `diff_job`. Algorithm-specific stats (e.g. bisection segment 
 | `execution_time_seconds` | `REAL` / `DOUBLE PRECISION` | nullable | Wall-clock duration. |
 | `match`                  | `INTEGER` / `BOOLEAN`   | nullable    | `1`/`TRUE` when the two tables are identical. |
 | `error`                  | `TEXT` / `TEXT`         | nullable    | Error message when `status='failed'`. |
-| `metadata`               | `TEXT` / `JSONB`        | nullable    | Algorithm-specific stats (e.g. `{"segments_compared": N, "max_depth": D}`). SQLite column added via forward-compat `ALTER TABLE`. |
+| `metadata`               | `TEXT` / `JSONB`        | nullable    | Algorithm-specific stats (e.g. `{"segments_compared": N, "max_depth": D}`). |
 
 ### 3.6 `diff_run_detail`
 
@@ -206,9 +208,9 @@ Historical snapshot of asset-level metadata captured at run time. Decoupled from
 | `source_a_row_count`  | `INTEGER` / `BIGINT`   | nullable    | Total rows scanned on side A. |
 | `source_b_asset`      | `TEXT` / `VARCHAR`     | nullable    | FQ name as it stood at run time. |
 | `source_b_row_count`  | `INTEGER` / `BIGINT`   | nullable    | Total rows scanned on side B. |
-| `common_columns`      | `TEXT` / `JSONB`       | nullable    | JSON array of columns present on both sides. |
-| `schema_differences`  | `TEXT` / `JSONB`       | nullable    | JSON object describing type mismatches. |
-| `columns_not_matched` | `TEXT` / `JSONB`       | nullable    | `{"source_only": [...], "target_only": [...]}`. |
+| `common_columns`      | `TEXT` / `JSONB`       | nullable    | JSON array of column names present on both sides, e.g. `["id", "name", "amount"]`. |
+| `schema_differences`  | `TEXT` / `JSONB`       | nullable    | `{"columns_only_in_a": [...], "columns_only_in_b": [...], "column_type_differences": [{"column": "amount", "table_a": {"type": "NUMERIC", "nullable": true}, "table_b": {"type": "TEXT", "nullable": false}}], "row_count_difference": N, "size_difference": N}`. |
+| `columns_not_matched` | `TEXT` / `JSONB`       | nullable    | `{"source_a_only": [...], "source_b_only": [...]}` — derived from `schema_differences`; empty keys omitted, `NULL` when all columns match. |
 
 ### 3.7 `diff_result`
 
