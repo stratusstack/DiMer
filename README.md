@@ -4,6 +4,8 @@ DiMer is a universal data diff tool — think `git diff` for database tables. It
 
 It ships as an interactive CLI (`dimer-diff`) and a Python library (`dimer`). It supports Snowflake, PostgreSQL, MySQL, BigQuery, Databricks, CSV, and Parquet out of the box, with automatic connection method fallback, diff history persistence, and four comparison algorithms for tables of any size.
 
+> **Terminology — source vs target.** A diff compares two inputs: **source A** (also called *source*, or the *left* side) and **source B** (also called *target*, or the *right* side). "Target" is only a label for the second input — DiMer is read-only on both sides and never writes to a target destination. Row statuses are expressed from A's perspective: ADDED = in B but not A, DELETED = in A but not B.
+
 ---
 
 ## Installation

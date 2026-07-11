@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS project (
     description TEXT
 );
 
-CREATE TABLE IF NOT EXISTS "user" (
+CREATE TABLE IF NOT EXISTS user_profile (
     user_id    UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     email      VARCHAR UNIQUE,
     name       VARCHAR NOT NULL,
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS project_source (
     host        VARCHAR,
     port        INTEGER,
     db_name     VARCHAR,
-    user_id     UUID REFERENCES "user"(user_id),
+    user_id     UUID REFERENCES user_profile(user_id),
     UNIQUE (project_id, source_type, source_name)
 );
 
@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS diff_run_detail (
     source_b_row_count  BIGINT,
     common_columns      JSONB,
     schema_differences  JSONB,
-    columns_not_matched JSONB                    -- {"source_only": [], "target_only": []}
+    columns_not_matched JSONB                    -- {"source_a_only": [], "source_b_only": []}
 );
 
 CREATE TABLE IF NOT EXISTS diff_result (
