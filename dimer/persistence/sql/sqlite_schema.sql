@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS diff_run_detail (
     source_b_row_count  INTEGER,
     common_columns      TEXT,               -- JSON array
     schema_differences  TEXT,               -- JSON object
-    columns_not_matched TEXT                -- JSON object {source_a_only: [], source_b_only: []}
+    columns_not_matched TEXT,               -- JSON object {source_a_only: [], source_b_only: []}
+    run_detail          TEXT                -- JSON object; free-form run anomalies (e.g. duplicate keys skipped)
 );
 
 CREATE TABLE IF NOT EXISTS diff_result (

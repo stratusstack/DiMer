@@ -289,13 +289,41 @@ def save_diff_run(
         ),
     )
 
+    # Build the diff_row batch first, deduplicating on key_hash so that
+    # non-unique user-supplied key columns cannot violate the composite PK.
+    # Skipped duplicates are surfaced in diff_run_detail.run_detail.
+    batch = []
+    seen_hashes = set()
+    duplicate_keys_skipped = 0
+    for dr in result.row_diffs[:MAX_DETAIL_ROWS]:
+        key_hash = _key_hash(dr.key_values)
+        if key_hash in seen_hashes:
+            duplicate_keys_skipped += 1
+            continue
+        seen_hashes.add(key_hash)
+        src_vals = _json(dr.source_values) if save_original_values else None
+        tgt_vals = _json(dr.target_values) if save_original_values else None
+        batch.append((
+            run_id,
+            key_hash,
+            _json(dr.key_values),
+            dr.status.value,
+            _json(dr.mismatched_columns) if dr.mismatched_columns else None,
+            src_vals,
+            tgt_vals,
+        ))
+
+    run_detail: Dict[str, Any] = {}
+    if duplicate_keys_skipped:
+        run_detail["duplicate_keys_skipped"] = duplicate_keys_skipped
+
     # 2. diff_run_detail
     cols_not_matched = _extract_columns_not_matched(result.schema_differences)
     db.execute(
         "INSERT INTO diff_run_detail "
         "(run_id, source_a_asset, source_a_row_count, source_b_asset, source_b_row_count, "
-        "common_columns, schema_differences, columns_not_matched) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "common_columns, schema_differences, columns_not_matched, run_detail) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             run_id,
             source_a_asset,
@@ -305,6 +333,7 @@ def save_diff_run(
             _json(result.common_columns),
             _json(result.schema_differences),
             _json(cols_not_matched),
+            _json(run_detail or None),
         ),
     )
 
@@ -318,27 +347,20 @@ def save_diff_run(
              s.modified_count, s.matched_count, now),
         )
 
-    # 4. diff_row  (capped at MAX_DETAIL_ROWS)
-    rows_to_save = result.row_diffs[:MAX_DETAIL_ROWS]
-    if rows_to_save:
-        batch = []
-        for dr in rows_to_save:
-            src_vals = _json(dr.source_values) if save_original_values else None
-            tgt_vals = _json(dr.target_values) if save_original_values else None
-            batch.append((
-                run_id,
-                _key_hash(dr.key_values),
-                _json(dr.key_values),
-                dr.status.value,
-                _json(dr.mismatched_columns) if dr.mismatched_columns else None,
-                src_vals,
-                tgt_vals,
-            ))
+    # 4. diff_row  (capped at MAX_DETAIL_ROWS, deduplicated above; the
+    # conflict clause is a second safety net for the composite PK)
+    if batch:
+        insert = (
+            "INSERT OR IGNORE INTO diff_row " if db._is_sqlite
+            else "INSERT INTO diff_row "
+        )
+        suffix = "" if db._is_sqlite else " ON CONFLICT DO NOTHING"
         db.executemany(
-            "INSERT INTO diff_row "
-            "(run_id, key_hash, key_values, status, mismatched_columns, "
+            insert
+            + "(run_id, key_hash, key_values, status, mismatched_columns, "
             "source_values, target_values) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?)"
+            + suffix,
             batch,
         )
 

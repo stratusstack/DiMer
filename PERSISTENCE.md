@@ -93,6 +93,7 @@ erDiagram
         JSONB   common_columns
         JSONB   schema_differences
         JSONB   columns_not_matched
+        JSONB   run_detail
     }
     diff_result {
         UUID   run_id         PK,FK
@@ -211,6 +212,7 @@ Historical snapshot of asset-level metadata captured at run time. Decoupled from
 | `common_columns`      | `TEXT` / `JSONB`       | nullable    | JSON array of column names present on both sides, e.g. `["id", "name", "amount"]`. |
 | `schema_differences`  | `TEXT` / `JSONB`       | nullable    | `{"columns_only_in_a": [...], "columns_only_in_b": [...], "column_type_differences": [{"column": "amount", "table_a": {"type": "NUMERIC", "nullable": true}, "table_b": {"type": "TEXT", "nullable": false}}], "row_count_difference": N, "size_difference": N}`. |
 | `columns_not_matched` | `TEXT` / `JSONB`       | nullable    | `{"source_a_only": [...], "source_b_only": [...]}` — derived from `schema_differences`; empty keys omitted, `NULL` when all columns match. |
+| `run_detail`          | `TEXT` / `JSONB`       | nullable    | Free-form anomaly notes recorded at save time, e.g. `{"duplicate_keys_skipped": N}` when non-unique key columns produced colliding `diff_row` hashes; `NULL` when the run was clean. |
 
 ### 3.7 `diff_result`
 
