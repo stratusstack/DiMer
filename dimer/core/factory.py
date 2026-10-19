@@ -230,6 +230,39 @@ def _auto_register_connectors() -> None:
         logger.debug("Qdrant connector not available")
 
     try:
+        # Import and register Pinecone connector (vector store, VEC family)
+        from dimer.connectors.pinecone.connector import PineconeConnector
+
+        ConnectorFactory.register_connector("pinecone", PineconeConnector)
+    except ImportError:
+        logger.debug("Pinecone connector not available")
+
+    try:
+        # Import and register Milvus connector (vector store, VEC family)
+        from dimer.connectors.milvus.connector import MilvusConnector
+
+        ConnectorFactory.register_connector("milvus", MilvusConnector)
+    except ImportError:
+        logger.debug("Milvus connector not available")
+
+    try:
+        # Import and register Weaviate connector (vector store, VEC family)
+        from dimer.connectors.weaviate.connector import WeaviateConnector
+
+        ConnectorFactory.register_connector("weaviate", WeaviateConnector)
+    except ImportError:
+        logger.debug("Weaviate connector not available")
+
+    try:
+        # Import and register ChromaDB connector (vector store, VEC family)
+        from dimer.connectors.chromadb.connector import ChromaDBConnector
+
+        ConnectorFactory.register_connector("chromadb", ChromaDBConnector)
+        ConnectorFactory.register_connector("chroma", ChromaDBConnector)
+    except ImportError:
+        logger.debug("ChromaDB connector not available")
+
+    try:
         # Import and register InfluxDB connector (time-series store, TS family)
         from dimer.connectors.influxdb.connector import InfluxDBConnector
 

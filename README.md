@@ -293,9 +293,13 @@ manager.close_all()
 | Elasticsearch (SRCH) | `elastic` | Native (elasticsearch-py) |
 | Neo4j (GRPH) | — | Native (neo4j Bolt driver) |
 | Qdrant (VEC) | — | Native (qdrant-client) |
+| Pinecone (VEC) | — | Native (pinecone-client) |
+| Milvus (VEC) | — | Native (pymilvus `MilvusClient`) |
+| Weaviate (VEC) | — | Native (weaviate-client v4) |
+| ChromaDB (VEC) | `chroma` | Native (chromadb `HttpClient`) |
 | InfluxDB (TS) | — | Native (influxdb, InfluxQL) |
 
-MongoDB, the six non-relational families above, and the tabular file
+MongoDB, the ten non-relational families above, and the tabular file
 connectors (CSV — DELIM family, Parquet — COLF family) have no real SQL
 surface, so they support `FULL_FETCH_DIFF`, `HASH_DIFF`, `SCHEMA_DIFF`,
 `SAMPLED`, `BLOOM`, and `EMBEDDING_SIMILARITY` (via client-side
