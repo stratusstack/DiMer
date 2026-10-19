@@ -91,11 +91,23 @@ neo4j = [
 qdrant = [
     "qdrant-client>=1.7.0",
 ]
+pinecone = [
+    "pinecone-client>=3.0.0",
+]
+milvus = [
+    "pymilvus>=2.4.0",
+]
+weaviate = [
+    "weaviate-client>=4.4.0",
+]
+chromadb = [
+    "chromadb>=0.4.22",
+]
 influxdb = [
     "influxdb>=5.3.0",
 ]
 all = [
-    "dimer[snowflake,postgresql,mysql,bigquery,databricks,duckdb,mongodb,redis,cassandra,elasticsearch,neo4j,qdrant,influxdb]",
+    "dimer[snowflake,postgresql,mysql,bigquery,databricks,duckdb,mongodb,redis,cassandra,elasticsearch,neo4j,qdrant,pinecone,milvus,weaviate,chromadb,influxdb]",
 ]
 dev = [
     "pytest>=7.0.0",

@@ -144,6 +144,10 @@ SUPPORTED_SOURCES: List[str] = [
     "elasticsearch",
     "neo4j",
     "qdrant",
+    "pinecone",
+    "milvus",
+    "weaviate",
+    "chromadb",
     "influxdb",
 ]
 
@@ -219,6 +223,18 @@ REQUIRED_VARS: Dict[str, List[str]] = {
     "qdrant": [
         "QDRANT_HOST",
     ],
+    "pinecone": [
+        "PINECONE_API_KEY",
+    ],
+    "milvus": [
+        "MILVUS_HOST",
+    ],
+    "weaviate": [
+        "WEAVIATE_HOST",
+    ],
+    "chromadb": [
+        "CHROMADB_HOST",
+    ],
     "influxdb": [
         "INFLUXDB_HOST",
         "INFLUXDB_DATABASE",
@@ -251,6 +267,13 @@ FQ_HINTS: Dict[str, str] = {
     "elasticsearch": "index                     e.g. orders",
     "neo4j": "node label                e.g. Order",
     "qdrant": "collection                e.g. orders",
+    "pinecone": (
+        "index                     e.g. orders\n"
+        "                          or   index.namespace"
+    ),
+    "milvus": "collection                e.g. orders",
+    "weaviate": "collection                e.g. Order",
+    "chromadb": "collection                e.g. orders",
     "influxdb": "measurement               e.g. orders",
 }
 
@@ -414,6 +437,37 @@ def build_config(source_type: str) -> ConnectionConfig:
             extra_params={
                 "api_key": os.getenv("QDRANT_API_KEY"),
             },
+        )
+    if source_type == "pinecone":
+        return ConnectionConfig(
+            password=os.getenv("PINECONE_API_KEY"),
+            extra_params={
+                "namespace": os.getenv("PINECONE_NAMESPACE", ""),
+            },
+        )
+    if source_type == "milvus":
+        return ConnectionConfig(
+            host=os.getenv("MILVUS_HOST", "localhost"),
+            port=int(os.getenv("MILVUS_PORT", "19530")),
+            database=os.getenv("MILVUS_DATABASE", "default"),
+            extra_params={
+                "token": os.getenv("MILVUS_TOKEN"),
+            },
+        )
+    if source_type == "weaviate":
+        return ConnectionConfig(
+            host=os.getenv("WEAVIATE_HOST", "localhost"),
+            port=int(os.getenv("WEAVIATE_PORT", "8080")),
+            password=os.getenv("WEAVIATE_API_KEY"),
+            extra_params={
+                "grpc_port": int(os.getenv("WEAVIATE_GRPC_PORT", "50051")),
+            },
+        )
+    if source_type == "chromadb":
+        return ConnectionConfig(
+            host=os.getenv("CHROMADB_HOST", "localhost"),
+            port=int(os.getenv("CHROMADB_PORT", "8000")),
+            password=os.getenv("CHROMADB_API_KEY"),
         )
     if source_type == "influxdb":
         return ConnectionConfig(
