@@ -9,10 +9,19 @@ from dimer.core.algorithms.base import (
     BaseAlgorithm,
     BISECTION_DEFAULT_SEGMENTS,
     BISECTION_DEFAULT_THRESHOLD,
+    _build_row_frames,
     _get_col_value,
     _validate_identifier,
 )
-from dimer.core.models import DiffAlgorithm, DiffResult, DiffRun, RowStatus
+from dimer.core.models import (
+    Assurance,
+    ComparisonPurpose,
+    Coverage,
+    DiffAlgorithm,
+    DiffResult,
+    DiffRun,
+    RowStatus,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -20,8 +29,8 @@ logger = structlog.get_logger(__name__)
 def _build_aggregate_hash_expr(connector, col_exprs: List[str]) -> str:
     """Build a segment-level aggregate hash expression from column expressions.
 
-    Each column is cast to text and concatenated (same as _build_hash_expr),
-    then wrapped in the connector's aggregate hash function (e.g. BIT_XOR(MD5(...))).
+    Columns are framed NULL-safely (same as _build_hash_expr), then wrapped in
+    the connector's aggregate hash function (e.g. BIT_XOR(MD5(...))).
     Raises NotImplementedError if the connector does not declare 'aggregate_hash'.
     """
     if "aggregate_hash" not in connector.DIALECTS:
@@ -29,12 +38,7 @@ def _build_aggregate_hash_expr(connector, col_exprs: List[str]) -> str:
             f"Connector {type(connector).__name__} does not support bisection "
             "(DIALECTS missing 'aggregate_hash' key)"
         )
-    cast_tmpl = connector.DIALECTS.get("cast_to_text", "CAST({COL} AS VARCHAR)")
-    sep = connector.DIALECTS["concatenation"]
-    agg_hash_tmpl = connector.DIALECTS["aggregate_hash"]
-    cast_cols = [cast_tmpl.replace("{COL}", col) for col in col_exprs]
-    inner = sep.join(cast_cols)
-    return agg_hash_tmpl.replace("{COL}", inner)
+    return connector.DIALECTS["aggregate_hash"].replace("{COL}", _build_row_frames(connector, col_exprs))
 
 
 class BisectionAlgorithm(BaseAlgorithm):
@@ -46,7 +50,13 @@ class BisectionAlgorithm(BaseAlgorithm):
     the rows are fetched from both sides and classified in-memory.
     """
 
-    def run(self) -> DiffRun:
+    ALGORITHM = DiffAlgorithm.BISECTION
+    PURPOSE = ComparisonPurpose.ROW_EQUALITY
+    ASSURANCE = Assurance.PROBABILISTIC
+    COVERAGE = Coverage.FULL
+    REQUIRES_KEYS = True
+
+    def _run(self) -> DiffRun:
         start = time.time()
 
         bisection_key = (
@@ -104,6 +114,11 @@ class BisectionAlgorithm(BaseAlgorithm):
 
         safe_a = _validate_identifier(table_a, case_a)
         safe_b = _validate_identifier(table_b, case_b)
+
+        # Key rules (ADR-0001 §D4) — the XOR aggregate cancels identical rows,
+        # so unique non-NULL keys are a precondition, not an optimisation
+        self._check_keys_sql(self._left_connector, safe_a, keys_a, case_a)
+        self._check_keys_sql(self._right_connector, safe_b, keys_b, case_b)
 
         # Row counts
         count_a = self._count_rows(self._left_connector, safe_a)
@@ -192,8 +207,8 @@ class BisectionAlgorithm(BaseAlgorithm):
                 for row in rows_b_raw
             ]
 
-            lookup_a = {tuple(_get_col_value(r, k) for k in keys_a): r for r in rows_a_raw}
-            lookup_b = {tuple(_get_col_value(r, k) for k in keys_a): r for r in rows_b_remapped}
+            lookup_a = self._index_rows(rows_a_raw, keys_a, table_a)
+            lookup_b = self._index_rows(rows_b_remapped, keys_a, table_b)
 
             bucket_diffs = self._classify_rows(lookup_a, lookup_b, keys_a, non_key_cols, common_columns)
             row_diffs.extend(bucket_diffs)

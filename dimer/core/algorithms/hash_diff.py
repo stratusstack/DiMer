@@ -12,11 +12,21 @@ from dimer.core.algorithms.base import (
     _WHERE_CHUNK_SIZE,
     _build_hash_expr,
     _get_col_value,
+    _mismatched_columns,
     _python_row_hash,
     _supports_sql,
     _validate_identifier,
 )
-from dimer.core.models import DiffAlgorithm, DiffResult, DiffRow, DiffRun, RowStatus
+from dimer.core.models import (
+    Assurance,
+    ComparisonPurpose,
+    Coverage,
+    DiffAlgorithm,
+    DiffResult,
+    DiffRow,
+    DiffRun,
+    RowStatus,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -44,6 +54,13 @@ class HashDiffAlgorithm(BaseAlgorithm):
     Fetches are chunked into ``_WHERE_CHUNK_SIZE``-key batches to keep
     individual SQL statements within safe length limits.
     """
+
+    ALGORITHM = DiffAlgorithm.HASH_DIFF
+    PURPOSE = ComparisonPurpose.ROW_EQUALITY
+    ASSURANCE = Assurance.PROBABILISTIC
+    COVERAGE = Coverage.FULL
+    REQUIRES_KEYS = True
+    CAN_VERIFY_EXACT = True
 
     def _phase1_key_hashes(
         self,
@@ -74,7 +91,7 @@ class HashDiffAlgorithm(BaseAlgorithm):
             sql = f"SELECT {key_select} FROM {safe_table}"
         return self._query_rows(connector, sql)
 
-    def run(self) -> DiffRun:
+    def _run(self) -> DiffRun:
         start = time.time()
         case_a = getattr(self._left_connector, "IDENTIFIER_CASE", "preserve")
         case_b = getattr(self._right_connector, "IDENTIFIER_CASE", "preserve")
@@ -146,15 +163,12 @@ class HashDiffAlgorithm(BaseAlgorithm):
                 "Consider using BISECTION algorithm for large tables."
             )
 
-        # Build key → hash lookups
-        hash_lookup_a: Dict[tuple, Any] = {
-            tuple(_get_col_value(r, k) for k in keys_a): _get_col_value(r, '_dimer_row_hash')
-            for r in rows_p1_a
-        }
-        hash_lookup_b: Dict[tuple, Any] = {
-            tuple(_get_col_value(r, k) for k in keys_b): _get_col_value(r, '_dimer_row_hash')
-            for r in rows_p1_b
-        }
+        # Build key → hash lookups; rejects NULL / duplicate keys (ADR-0001 §D4)
+        def _row_hash(r: Dict[str, Any]) -> Any:
+            return _get_col_value(r, '_dimer_row_hash')
+
+        hash_lookup_a: Dict[tuple, Any] = self._index_rows(rows_p1_a, keys_a, table_a, remap=_row_hash)
+        hash_lookup_b: Dict[tuple, Any] = self._index_rows(rows_p1_b, keys_b, table_b, remap=_row_hash)
 
         # ----------------------------------------------------------------
         # Set operations — ADDED and DELETED need no further fetching
@@ -175,6 +189,8 @@ class HashDiffAlgorithm(BaseAlgorithm):
 
         # Short-circuit when there are no common rows or no non-key columns
         if not keys_in_both or not non_key_cols:
+            # Decided by key membership alone — no hash was trusted
+            self._assurance = Assurance.EXACT
             matched_count = len(keys_in_both)
             summary = DiffResult(
                 source_row_count=count_a,
@@ -197,9 +213,13 @@ class HashDiffAlgorithm(BaseAlgorithm):
         # ----------------------------------------------------------------
         # Determine modification candidates
         # ----------------------------------------------------------------
+        # Hashes are only comparable when both sides use the same recipe; with
+        # require_exact, hash-equal rows are value-verified like cross-engine rows.
         same_db_type = type(self._left_connector) is type(self._right_connector)
+        trust_hashes = same_db_type and not self._require_exact
+        self._assurance = Assurance.PROBABILISTIC if trust_hashes else Assurance.EXACT
 
-        if same_db_type:
+        if trust_hashes:
             # Hashes are produced by the same function — directly comparable
             candidates = [
                 k for k in keys_in_both
@@ -211,7 +231,7 @@ class HashDiffAlgorithm(BaseAlgorithm):
                 f"{matched_count} identical, {len(candidates)} modified candidates"
             )
         else:
-            # Different hash functions — cannot compare across DB types
+            # Different hash functions (or require_exact) — value-compare every common row
             candidates = list(keys_in_both)
             matched_count = 0  # recalculated after Phase 2
             logger.info(
@@ -269,7 +289,7 @@ class HashDiffAlgorithm(BaseAlgorithm):
         lookup_a = {tuple(_get_col_value(r, k) for k in keys_a): r for r in fetched_a}
         lookup_b = {tuple(_get_col_value(r, k) for k in keys_a): r for r in rows_b_remapped}
 
-        if same_db_type:
+        if trust_hashes:
             # All candidates are confirmed modified — classify for detail only
             for key_tuple in candidates[:MAX_DETAIL_ROWS]:
                 row_a = lookup_a.get(key_tuple)
@@ -277,10 +297,7 @@ class HashDiffAlgorithm(BaseAlgorithm):
                 key_vals = {k: v for k, v in zip(keys_a, key_tuple)}
                 mismatched: List[str] = []
                 if row_a and row_b:
-                    mismatched = [
-                        col for col in non_key_cols
-                        if str(_get_col_value(row_a, col)) != str(_get_col_value(row_b, col))
-                    ]
+                    mismatched = _mismatched_columns(row_a, row_b, non_key_cols)
                 row_diffs.append(DiffRow(
                     key_values=key_vals,
                     status=RowStatus.MODIFIED,

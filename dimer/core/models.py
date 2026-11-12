@@ -54,6 +54,32 @@ class DiffAlgorithm(str, Enum):
     SKETCH_DIFF = "SKETCH_DIFF"     # approximate cardinality (HLL) + approximate median compare; explicit opt-in
 
 
+class ComparisonPurpose(str, Enum):
+    """The question a diff run answers (ADR-0001 §D1)."""
+
+    ROW_EQUALITY = "ROW_EQUALITY"              # keyed rows equal on compared columns
+    SAMPLED_VALIDATION = "SAMPLED_VALIDATION"  # sampled source rows checked against target
+    PREFILTER = "PREFILTER"                    # "definitely differs" signal; not an equality verdict
+    SCHEMA = "SCHEMA"                          # structural attributes; counts are columns
+    PROFILE = "PROFILE"                        # per-column statistics; says nothing about rows
+    VECTOR_SIMILARITY = "VECTOR_SIMILARITY"    # mapped vectors within a distance threshold
+
+
+class Assurance(str, Enum):
+    """How strongly a diff run's verdict is guaranteed (ADR-0001 §D2)."""
+
+    EXACT = "EXACT"                  # equality decided by comparing canonical values
+    PROBABILISTIC = "PROBABILISTIC"  # some "equal" verdicts rest on hash equality
+    APPROXIMATE = "APPROXIMATE"      # numbers are estimates (sketches, extrapolated samples)
+
+
+class Coverage(str, Enum):
+    """Whether a diff run looked at every row or a sample (ADR-0001 §D2)."""
+
+    FULL = "FULL"
+    SAMPLED = "SAMPLED"
+
+
 class RowStatus(Enum):
     """Status of a single row in a diff result."""
 
@@ -425,6 +451,10 @@ class DiffRun:
     error: Optional[str] = None
     execution_time_seconds: Optional[float] = None
     metadata: Optional[Dict[str, Any]] = None  # algorithm-specific stats (bisection: segment_count, depth_reached, etc.)
+    # ADR-0001 labels; set by BaseAlgorithm.run() and mirrored into ``metadata`` for persistence
+    purpose: Optional[ComparisonPurpose] = None
+    assurance: Optional[Assurance] = None
+    coverage: Optional[Coverage] = None
 
     def added_rows(self) -> List[DiffRow]:
         return [r for r in self.row_diffs if r.status == RowStatus.ADDED]

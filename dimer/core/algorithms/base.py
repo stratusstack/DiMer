@@ -1,14 +1,24 @@
 """Base class and shared utilities for all DiMer comparison algorithms."""
 
-import hashlib
 import re
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import structlog
 
+from dimer.core.canonicalization import (
+    CANONICALIZATION_VERSION,
+    canonical_row,
+    canonicalize,
+    row_fingerprint,
+    types_compatible,
+)
 from dimer.core.models import (
+    Assurance,
     ComparisonConfig,
+    ComparisonPurpose,
+    Coverage,
+    DiffAlgorithm,
     DiffRow,
     DiffRun,
     RowStatus,
@@ -127,32 +137,59 @@ def _get_col_value(row: Dict[str, Any], col: str) -> Any:
 # Hash expression builders
 # ---------------------------------------------------------------------------
 
+def _build_row_frames(connector, col_exprs: List[str]) -> str:
+    """Concatenate column expressions as NULL-safe, length-framed text (ADR-0001 §D3).
+
+    Each column becomes ``COALESCE(<len>(<text>) || ':' || <text>, 'N')`` so a
+    NULL (``N``) never collides with ``''`` (``0:``) and field boundaries are
+    unambiguous. The result is only comparable with frames built by the same
+    dialect.
+    """
+    cast_tmpl = connector.DIALECTS.get("cast_to_text", "CAST({COL} AS VARCHAR)")
+    len_tmpl = connector.DIALECTS.get("length", "LENGTH({COL})")
+    sep = connector.DIALECTS["concatenation"]
+    frames = []
+    for col in col_exprs:
+        text = cast_tmpl.replace("{COL}", col)
+        length = cast_tmpl.replace("{COL}", len_tmpl.replace("{COL}", text))
+        if sep.strip() == "||":
+            body = f"{length} || ':' || {text}"
+        else:
+            # MySQL-family: concatenation is a CONCAT() argument list
+            body = f"CONCAT({length}, ':', {text})"
+        frames.append(f"COALESCE({body}, 'N')")
+    return sep.join(frames)
+
+
 def _build_hash_expr(connector, col_exprs: List[str]) -> str:
     """Build a row-level SQL hash expression from a list of column expressions.
 
-    Each column expression is first cast to text using the connector's dialect,
-    then concatenated, then wrapped in the connector's hash function.
+    Columns are framed by ``_build_row_frames`` and the result is wrapped in
+    the connector's hash function.
     """
-    cast_tmpl = connector.DIALECTS.get("cast_to_text", "CAST({COL} AS VARCHAR)")
-    sep = connector.DIALECTS["concatenation"]
-    hash_tmpl = connector.DIALECTS["hash"]
-    cast_cols = [cast_tmpl.replace("{COL}", col) for col in col_exprs]
-    inner = sep.join(cast_cols)
-    return hash_tmpl.replace("{COL}", inner)
+    return connector.DIALECTS["hash"].replace("{COL}", _build_row_frames(connector, col_exprs))
 
 
 def _python_row_hash(row: Dict[str, Any], columns: List[str]) -> str:
-    """Compute an MD5 hash of a row's values for the given columns.
+    """Client-side row fingerprint for non-SQL connectors and Python paths.
 
-    Used for cross-database comparison where SQL hashing is not available.
-    NULL values are represented as the empty string (known limitation: NULL == '').
+    Delegates to ``canonicalization.row_fingerprint`` (NULL-safe, framed,
+    canonical values). Only comparable with other Python fingerprints.
     """
-    parts = [
-        str(_get_col_value(row, col)) if _get_col_value(row, col) is not None else ''
-        for col in columns
-    ]
-    raw = '|'.join(parts)
-    return hashlib.md5(raw.encode('utf-8')).hexdigest()
+    return row_fingerprint(row, columns)
+
+
+def _mismatched_columns(row_a: Dict[str, Any], row_b: Dict[str, Any], columns: List[str]) -> List[str]:
+    """Columns whose canonical values differ between two rows."""
+    return [c for c in columns if canonicalize(_get_col_value(row_a, c)) != canonicalize(_get_col_value(row_b, c))]
+
+
+class KeyValidationError(ValueError):
+    """A key rule from ADR-0001 §D4 is violated (duplicate or NULL key values)."""
+
+
+def _format_key_examples(examples: List[tuple]) -> str:
+    return ", ".join(repr(e if len(e) > 1 else e[0]) for e in examples)
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +203,16 @@ class BaseAlgorithm(ABC):
     Shared infrastructure helpers (metadata fetch, row querying, row
     classification) are provided here so concrete classes stay focused.
     """
+
+    # ADR-0001 labels; subclasses override. ``_assurance`` may be lowered or
+    # raised per run (e.g. HASH_DIFF across engines is EXACT).
+    ALGORITHM: Optional[DiffAlgorithm] = None
+    PURPOSE: ComparisonPurpose = ComparisonPurpose.ROW_EQUALITY
+    ASSURANCE: Assurance = Assurance.EXACT
+    COVERAGE: Coverage = Coverage.FULL
+    REQUIRES_KEYS: bool = False
+    # True when require_exact can be met by verifying values instead of failing
+    CAN_VERIFY_EXACT: bool = False
 
     _left_connector: Any
     _right_connector: Any
@@ -189,10 +236,128 @@ class BaseAlgorithm(ABC):
         self._left_config = left_config
         self._right_config = right_config
 
-    @abstractmethod
     def run(self) -> DiffRun:
+        """Validate the request, execute the algorithm and label the result."""
+        self._assurance = self.ASSURANCE
+        self._excluded_columns: List[str] = []
+        if self._require_exact and self.ASSURANCE != Assurance.EXACT and not self.CAN_VERIFY_EXACT:
+            result = DiffRun(
+                match=False,
+                error=(
+                    f"require_exact: {self.ALGORITHM.value if self.ALGORITHM else type(self).__name__} "
+                    f"produces {self.ASSURANCE.value} results and cannot verify them exactly"
+                ),
+                algorithm=self.ALGORITHM,
+            )
+        elif self.REQUIRES_KEYS and (key_error := self._key_list_error()):
+            result = DiffRun(match=False, error=key_error, algorithm=self.ALGORITHM)
+        else:
+            try:
+                result = self._run()
+            except KeyValidationError as e:
+                result = DiffRun(match=False, error=str(e), algorithm=self.ALGORITHM)
+        return self._label(result)
+
+    @abstractmethod
+    def _run(self) -> DiffRun:
         """Execute the algorithm and return the diff result."""
         ...
+
+    @property
+    def _require_exact(self) -> bool:
+        return bool(self._left_config.get('require_exact') or self._right_config.get('require_exact'))
+
+    def _label(self, result: DiffRun) -> DiffRun:
+        """Stamp purpose / assurance / coverage onto the result and its metadata."""
+        result.purpose = self.PURPOSE
+        result.assurance = self._assurance
+        result.coverage = self.COVERAGE
+        metadata = dict(result.metadata or {})
+        metadata.update({
+            "purpose": self.PURPOSE.value,
+            "assurance": self._assurance.value,
+            "coverage": self.COVERAGE.value,
+            "canonicalization_version": CANONICALIZATION_VERSION,
+        })
+        if self._excluded_columns:
+            metadata["excluded_columns"] = list(self._excluded_columns)
+        result.metadata = metadata
+        return result
+
+    # ------------------------------------------------------------------
+    # Key rules (ADR-0001 §D4)
+    # ------------------------------------------------------------------
+
+    def _key_list_error(self) -> Optional[str]:
+        keys_a = self._left_config['keys']
+        keys_b = self._right_config['keys']
+        if not keys_a or not keys_b:
+            return "Key columns are required for row comparison (keys is empty)"
+        if len(keys_a) != len(keys_b):
+            return "Key column lists must have equal length"
+        return None
+
+    def _index_rows(
+        self,
+        rows: List[Dict[str, Any]],
+        keys: List[str],
+        table: str,
+        remap: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+    ) -> Dict[tuple, Dict[str, Any]]:
+        """Build a key-tuple → row lookup, rejecting NULL and duplicate keys.
+
+        Raises ``KeyValidationError`` (with up to 5 examples) instead of
+        silently overwriting rows that share a key.
+        """
+        lookup: Dict[tuple, Dict[str, Any]] = {}
+        duplicates: List[tuple] = []
+        null_keys: List[tuple] = []
+        for row in rows:
+            key = tuple(_get_col_value(row, k) for k in keys)
+            if any(canonicalize(v) is None for v in key):
+                if len(null_keys) < 5:
+                    null_keys.append(key)
+                continue
+            if key in lookup:
+                if len(duplicates) < 5 and key not in duplicates:
+                    duplicates.append(key)
+                continue
+            lookup[key] = remap(row) if remap else row
+        if null_keys:
+            raise KeyValidationError(
+                f"NULL key values in {table} ({', '.join(keys)}): {_format_key_examples(null_keys)}"
+            )
+        if duplicates:
+            raise KeyValidationError(
+                f"Duplicate key values in {table} ({', '.join(keys)}): {_format_key_examples(duplicates)}"
+            )
+        return lookup
+
+    def _check_keys_sql(self, connector, safe_table: str, keys: List[str], case: str) -> None:
+        """Push down the NULL-key and duplicate-key checks; raise on violation."""
+        key_cols = [_validate_identifier(k, case) for k in keys]
+        key_select = ", ".join(key_cols)
+        table = _raw_table(safe_table)
+
+        null_where = " OR ".join(f"{k} IS NULL" for k in key_cols)
+        null_rows = self._query_rows(
+            connector, f"SELECT {key_select} FROM {safe_table} WHERE {null_where} LIMIT 5"
+        )
+        if null_rows:
+            examples = [tuple(_get_col_value(r, k) for k in keys) for r in null_rows]
+            raise KeyValidationError(
+                f"NULL key values in {table} ({', '.join(keys)}): {_format_key_examples(examples)}"
+            )
+
+        dup_rows = self._query_rows(
+            connector,
+            f"SELECT {key_select} FROM {safe_table} GROUP BY {key_select} HAVING COUNT(*) > 1 LIMIT 5",
+        )
+        if dup_rows:
+            examples = [tuple(_get_col_value(r, k) for k in keys) for r in dup_rows]
+            raise KeyValidationError(
+                f"Duplicate key values in {table} ({', '.join(keys)}): {_format_key_examples(examples)}"
+            )
 
     # ------------------------------------------------------------------
     # Schema helpers
@@ -306,7 +471,8 @@ class BaseAlgorithm(ABC):
         """Classify rows as ADDED / DELETED / MODIFIED given two key→row lookups.
 
         Both lookups must use A-side canonical column names.  ``non_key_cols``
-        drives hash comparison; ``common_columns`` is stored on modified rows.
+        are compared by canonical value (ADR-0001 §D3); ``common_columns`` is
+        stored on modified rows.
         """
         keys_only_in_a = set(lookup_a.keys()) - set(lookup_b.keys())
         keys_only_in_b = set(lookup_b.keys()) - set(lookup_a.keys())
@@ -325,12 +491,9 @@ class BaseAlgorithm(ABC):
         for key_tuple in keys_in_both:
             row_a = lookup_a[key_tuple]
             row_b = lookup_b[key_tuple]
-            if _python_row_hash(row_a, non_key_cols) != _python_row_hash(row_b, non_key_cols):
+            if canonical_row(row_a, non_key_cols) != canonical_row(row_b, non_key_cols):
                 key_vals = {k: v for k, v in zip(keys_a, key_tuple)}
-                mismatched = [
-                    col for col in non_key_cols
-                    if str(_get_col_value(row_a, col)) != str(_get_col_value(row_b, col))
-                ]
+                mismatched = _mismatched_columns(row_a, row_b, non_key_cols)
                 row_diffs.append(DiffRow(
                     key_values=key_vals,
                     status=RowStatus.MODIFIED,
@@ -384,8 +547,25 @@ class BaseAlgorithm(ABC):
         if schema_diff['column_type_differences']:
             logger.warning(f"Column type differences: {schema_diff['column_type_differences']}")
 
-        cols_b_lower = {c.name.lower() for c in metadata_b.columns}
-        common_columns = [col.name for col in metadata_a.columns if col.name.lower() in cols_b_lower]
+        cols_b = {c.name.lower(): c for c in metadata_b.columns}
+        common_columns = [col.name for col in metadata_a.columns if col.name.lower() in cols_b]
+
+        if self.PURPOSE in (
+            ComparisonPurpose.ROW_EQUALITY,
+            ComparisonPurpose.SAMPLED_VALIDATION,
+            ComparisonPurpose.PREFILTER,
+        ):
+            key_set = {k.lower() for k in self._left_config['keys']}
+            types_a = {c.name.lower(): c.data_type for c in metadata_a.columns}
+            excluded = [
+                c for c in common_columns
+                if c.lower() not in key_set
+                and not types_compatible(types_a[c.lower()], cols_b[c.lower()].data_type)
+            ]
+            if excluded:
+                logger.warning(f"Columns excluded from comparison (incompatible types): {excluded}")
+                self._excluded_columns = excluded
+                common_columns = [c for c in common_columns if c not in excluded]
         return schema_diff, common_columns
 
     def _diff_stat_dicts(

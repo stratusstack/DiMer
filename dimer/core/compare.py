@@ -39,6 +39,17 @@ from dimer.core.models import ComparisonConfig, DiffRun
 
 logger = structlog.get_logger(__name__)
 
+# Opt-in algorithm flags; a request may set at most one (ADR-0001 §D1)
+_ALGORITHM_FLAGS = (
+    'use_schema_diff',
+    'use_profile_diff',
+    'use_sketch_diff',
+    'use_embedding',
+    'use_bloom',
+    'use_bisection',
+    'use_sampling',
+)
+
 __all__ = [
     "Diffcheck",
     "MAX_DETAIL_ROWS",
@@ -124,9 +135,26 @@ class Diffcheck:
     # Public entry point
     # ------------------------------------------------------------------
 
+    def _requested_flags(self) -> list:
+        """Opt-in algorithm flags set on either side, in ``_ALGORITHM_FLAGS`` order."""
+        return [
+            flag for flag in _ALGORITHM_FLAGS
+            if self._left_config.get(flag) or self._right_config.get(flag)
+        ]
+
     def compare(self) -> DiffRun:
-        """Choose the appropriate comparison strategy and run the diff."""
+        """Choose the appropriate comparison strategy and run the diff.
+
+        Raises ``ValueError`` when more than one algorithm is requested, or
+        when sampling is requested for two tables on the same instance.
+        """
         logger.info("Starting table comparison")
+
+        flags = self._requested_flags()
+        if len(flags) > 1:
+            raise ValueError(
+                f"Conflicting algorithm options: {', '.join(flags)} — choose one"
+            )
 
         # Schema-only diff is an explicit opt-in (no data read; UC2)
         if self._left_config.get('use_schema_diff') or self._right_config.get('use_schema_diff'):
@@ -159,13 +187,12 @@ class Diffcheck:
             return self._make_algorithm(BisectionAlgorithm).run()
 
         # Sampling is an explicit opt-in; only valid for cross-database comparisons
-        if self._left_config.get('use_sampling'):
+        if flags == ['use_sampling']:
             if self._is_same_instance():
-                logger.warning(
+                raise ValueError(
                     "Sampling is only supported for cross-database comparisons; "
-                    "falling back to JOIN_DIFF"
+                    "both tables are on the same instance (use the default JOIN_DIFF)"
                 )
-                return self._make_algorithm(JoinDiffAlgorithm).run()
             sample_size = self._left_config.get('sample_size', SAMPLED_DEFAULT_SIZE)
             confidence = self._left_config.get('confidence', SAMPLED_DEFAULT_CONFIDENCE)
             logger.info(

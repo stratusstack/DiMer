@@ -7,7 +7,10 @@ import structlog
 
 from dimer.core.algorithms.base import BaseAlgorithm
 from dimer.core.models import (
+    Assurance,
     ColumnMetadata,
+    ComparisonPurpose,
+    Coverage,
     DiffAlgorithm,
     DiffResult,
     DiffRow,
@@ -57,7 +60,12 @@ class SchemaDiffAlgorithm(BaseAlgorithm):
     primary_key_match, table_row_count_source, table_row_count_target.
     """
 
-    def run(self) -> DiffRun:
+    ALGORITHM = DiffAlgorithm.SCHEMA_DIFF
+    PURPOSE = ComparisonPurpose.SCHEMA
+    ASSURANCE = Assurance.EXACT
+    COVERAGE = Coverage.FULL
+
+    def _run(self) -> DiffRun:
         start = time.time()
         strict: bool = self._left_config.get('schema_strict', False)  # type: ignore[attr-defined]
 
