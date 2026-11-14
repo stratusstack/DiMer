@@ -15,7 +15,16 @@ from dimer.core.algorithms.base import (
     _supports_sql,
     _validate_identifier,
 )
-from dimer.core.models import DiffAlgorithm, DiffResult, DiffRow, DiffRun, RowStatus
+from dimer.core.models import (
+    Assurance,
+    ComparisonPurpose,
+    Coverage,
+    DiffAlgorithm,
+    DiffResult,
+    DiffRow,
+    DiffRun,
+    RowStatus,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -82,7 +91,12 @@ class EmbeddingSimilarityAlgorithm(BaseAlgorithm):
     over_threshold, dimension_mismatches, parse_failures.
     """
 
-    def run(self) -> DiffRun:
+    ALGORITHM = DiffAlgorithm.EMBEDDING_SIMILARITY
+    PURPOSE = ComparisonPurpose.VECTOR_SIMILARITY
+    ASSURANCE = Assurance.EXACT
+    COVERAGE = Coverage.FULL
+
+    def _run(self) -> DiffRun:
         start = time.time()
 
         vector_column: Optional[str] = self._left_config.get('vector_column')  # type: ignore[attr-defined]

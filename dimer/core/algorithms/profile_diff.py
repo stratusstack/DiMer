@@ -11,7 +11,15 @@ from dimer.core.algorithms.base import (
     _get_col_value,
     _validate_identifier,
 )
-from dimer.core.models import ColumnMetadata, DiffAlgorithm, DiffResult, DiffRun
+from dimer.core.models import (
+    Assurance,
+    ColumnMetadata,
+    ComparisonPurpose,
+    Coverage,
+    DiffAlgorithm,
+    DiffResult,
+    DiffRun,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -75,7 +83,12 @@ class ProfileDiffAlgorithm(BaseAlgorithm):
     columns_common, table_row_count_source, table_row_count_target.
     """
 
-    def run(self) -> DiffRun:
+    ALGORITHM = DiffAlgorithm.PROFILE_DIFF
+    PURPOSE = ComparisonPurpose.PROFILE
+    ASSURANCE = Assurance.EXACT
+    COVERAGE = Coverage.FULL
+
+    def _run(self) -> DiffRun:
         start = time.time()
         tolerance: float = self._left_config.get(  # type: ignore[attr-defined]
             'profile_numeric_tolerance', PROFILE_DEFAULT_NUMERIC_TOLERANCE

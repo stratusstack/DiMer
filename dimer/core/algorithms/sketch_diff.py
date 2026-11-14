@@ -41,7 +41,15 @@ from dimer.core.algorithms.base import (
 # _MEDIAN_ELIGIBLE_TYPES (numeric + date/time — sketches are built for
 # numeric distributions, not lexicographic text ordering).
 from dimer.core.algorithms.profile_diff import _DISTINCT_TYPES, _MEDIAN_ELIGIBLE_TYPES
-from dimer.core.models import ColumnMetadata, DiffAlgorithm, DiffResult, DiffRun
+from dimer.core.models import (
+    Assurance,
+    ColumnMetadata,
+    ComparisonPurpose,
+    Coverage,
+    DiffAlgorithm,
+    DiffResult,
+    DiffRun,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -92,7 +100,12 @@ class SketchDiffAlgorithm(BaseAlgorithm):
     ``*_method`` entries when they differ from the side-level default).
     """
 
-    def run(self) -> DiffRun:
+    ALGORITHM = DiffAlgorithm.SKETCH_DIFF
+    PURPOSE = ComparisonPurpose.PROFILE
+    ASSURANCE = Assurance.APPROXIMATE
+    COVERAGE = Coverage.FULL
+
+    def _run(self) -> DiffRun:
         start = time.time()
         tolerance: float = self._left_config.get(  # type: ignore[attr-defined]
             'sketch_relative_tolerance', SKETCH_DEFAULT_RELATIVE_TOLERANCE

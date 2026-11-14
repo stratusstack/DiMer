@@ -10,11 +10,21 @@ from dimer.core.algorithms.base import (
     CROSS_DB_ROW_LIMIT,
     MAX_DETAIL_ROWS,
     _get_col_value,
-    _python_row_hash,
+    _mismatched_columns,
     _supports_sql,
     _validate_identifier,
 )
-from dimer.core.models import DiffAlgorithm, DiffResult, DiffRow, DiffRun, RowStatus
+from dimer.core.canonicalization import canonical_row
+from dimer.core.models import (
+    Assurance,
+    ComparisonPurpose,
+    Coverage,
+    DiffAlgorithm,
+    DiffResult,
+    DiffRow,
+    DiffRun,
+    RowStatus,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -26,7 +36,13 @@ class CrossDbDiffAlgorithm(BaseAlgorithm):
     hashes in Python, then identifies added/deleted/modified rows.
     """
 
-    def run(self) -> DiffRun:
+    ALGORITHM = DiffAlgorithm.FULL_FETCH_DIFF
+    PURPOSE = ComparisonPurpose.ROW_EQUALITY
+    ASSURANCE = Assurance.EXACT
+    COVERAGE = Coverage.FULL
+    REQUIRES_KEYS = True
+
+    def _run(self) -> DiffRun:
         start = time.time()
         case_a = getattr(self._left_connector, "IDENTIFIER_CASE", "preserve")
         case_b = getattr(self._right_connector, "IDENTIFIER_CASE", "preserve")
@@ -103,26 +119,16 @@ class CrossDbDiffAlgorithm(BaseAlgorithm):
         key_set_lower = {k.lower() for k in keys_a}
         non_key_cols = [c for c in common_columns if c.lower() not in key_set_lower]
 
-        # 3. Build key → {hash, row} lookup for both sides
-        # Key tuple uses A-side column names for both (values are the data)
-        def _make_key(row: Dict, key_cols: List[str]) -> tuple:
-            return tuple(_get_col_value(row, k) for k in key_cols)
-
-        lookup_a: Dict[tuple, Dict] = {}
-        for row in rows_a:
-            k = _make_key(row, keys_a)
-            lookup_a[k] = row
-
-        # For B rows, remap column names to A-side canonical names
-        lookup_b: Dict[tuple, Dict] = {}
-        for row in rows_b:
-            k = _make_key(row, keys_b)
-            # Remap B column names → A column names for uniform comparison
-            remapped = {
+        # 3. Build key → row lookups; rejects NULL / duplicate keys (ADR-0001 §D4).
+        # Key tuples use A-side column names; B rows are remapped to A-side names.
+        lookup_a: Dict[tuple, Dict] = self._index_rows(rows_a, keys_a, table_a)
+        lookup_b: Dict[tuple, Dict] = self._index_rows(
+            rows_b, keys_b, table_b,
+            remap=lambda row: {
                 col_a: _get_col_value(row, col_b)
                 for col_a, col_b in zip(common_columns, common_columns_b)
-            }
-            lookup_b[k] = remapped
+            },
+        )
 
         keys_only_in_a = set(lookup_a.keys()) - set(lookup_b.keys())
         keys_only_in_b = set(lookup_b.keys()) - set(lookup_a.keys())
@@ -141,15 +147,12 @@ class CrossDbDiffAlgorithm(BaseAlgorithm):
             key_vals = {k: v for k, v in zip(keys_b, key_tuple)}
             row_diffs.append(DiffRow(key_values=key_vals, status=RowStatus.ADDED))
 
-        # Modified: in both, compare hashes on non-key columns
-        modified_keys: List[tuple] = []
-        for key_tuple in keys_in_both:
-            row_a = lookup_a[key_tuple]
-            row_b = lookup_b[key_tuple]
-            hash_a = _python_row_hash(row_a, non_key_cols)
-            hash_b = _python_row_hash(row_b, non_key_cols)
-            if hash_a != hash_b:
-                modified_keys.append(key_tuple)
+        # Modified: in both, compare canonical values of non-key columns (ADR-0001 §D3)
+        modified_keys: List[tuple] = [
+            key_tuple for key_tuple in keys_in_both
+            if canonical_row(lookup_a[key_tuple], non_key_cols)
+            != canonical_row(lookup_b[key_tuple], non_key_cols)
+        ]
 
         # Column-level detail for modified rows (limited to MAX_DETAIL_ROWS)
         for key_tuple in modified_keys[:MAX_DETAIL_ROWS]:
@@ -157,12 +160,7 @@ class CrossDbDiffAlgorithm(BaseAlgorithm):
             row_b = lookup_b[key_tuple]
             key_vals = {k: v for k, v in zip(keys_a, key_tuple)}
 
-            mismatched: List[str] = []
-            for col in non_key_cols:
-                val_a = _get_col_value(row_a, col)
-                val_b = _get_col_value(row_b, col)
-                if str(val_a) != str(val_b):
-                    mismatched.append(col)
+            mismatched = _mismatched_columns(row_a, row_b, non_key_cols)
 
             row_diffs.append(DiffRow(
                 key_values=key_vals,

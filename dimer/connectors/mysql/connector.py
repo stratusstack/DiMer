@@ -30,6 +30,10 @@ class MySQLConnector(DataSourceConnector):
         "cast_to_text": "CAST({COL} AS CHAR)",
         "aggregate_hash": "BIT_XOR(CONV(SUBSTRING(MD5(CONCAT({COL})), 1, 16), 16, 10))",
         "random_func": "RAND()",
+        # ADR-0001: LENGTH() counts bytes in MySQL; frames use characters.
+        # No IS DISTINCT FROM — the null-safe equality operator is <=>.
+        "length": "CHAR_LENGTH({COL})",
+        "distinct_from": "NOT ({A} <=> {B})",
     }
     # SKETCH_DIFF (UC3): intentionally empty. Vanilla MySQL has no native
     # cardinality sketch (HeatWave's HLL() is a separate managed engine, not

@@ -8,11 +8,20 @@ import structlog
 from dimer.core.algorithms.base import (
     BaseAlgorithm,
     MAX_DETAIL_ROWS,
-    _build_hash_expr,
     _get_col_value,
+    _mismatched_columns,
     _validate_identifier,
 )
-from dimer.core.models import DiffAlgorithm, DiffResult, DiffRow, DiffRun, RowStatus
+from dimer.core.models import (
+    Assurance,
+    ComparisonPurpose,
+    Coverage,
+    DiffAlgorithm,
+    DiffResult,
+    DiffRow,
+    DiffRun,
+    RowStatus,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -24,7 +33,13 @@ class JoinDiffAlgorithm(BaseAlgorithm):
     from the same connection.
     """
 
-    def run(self) -> DiffRun:
+    ALGORITHM = DiffAlgorithm.JOIN_DIFF
+    PURPOSE = ComparisonPurpose.ROW_EQUALITY
+    ASSURANCE = Assurance.EXACT
+    COVERAGE = Coverage.FULL
+    REQUIRES_KEYS = True
+
+    def _run(self) -> DiffRun:
         start = time.time()
         conn = self._left_connector
         case = getattr(conn, "IDENTIFIER_CASE", "preserve")
@@ -63,6 +78,10 @@ class JoinDiffAlgorithm(BaseAlgorithm):
 
         safe_a = _validate_identifier(table_a, case)
         safe_b = _validate_identifier(table_b, case)
+
+        # Key rules (ADR-0001 §D4): no NULL or duplicate keys on either side
+        self._check_keys_sql(conn, safe_a, keys_a, case)
+        self._check_keys_sql(conn, safe_b, keys_b, case)
 
         # 2. Row counts
         logger.info("Counting rows in both tables")
@@ -105,17 +124,21 @@ class JoinDiffAlgorithm(BaseAlgorithm):
             non_key_cols = [c for c in common_columns if c.lower() not in key_set]
 
             if non_key_cols:
-                logger.info(f"Finding modified rows (hashing {len(non_key_cols)} non-key columns)")
-                col_exprs_a = [f'a.{_validate_identifier(c, case)}' for c in non_key_cols]
-                col_exprs_b = [f'b.{_validate_identifier(c, case)}' for c in non_key_cols]
-                hash_a = _build_hash_expr(conn, col_exprs_a)
-                hash_b = _build_hash_expr(conn, col_exprs_b)
+                logger.info(f"Finding modified rows (comparing {len(non_key_cols)} non-key columns)")
+                # Null-safe per-column comparison — exact, no row hashing (ADR-0001 §D2)
+                distinct_tmpl = conn.DIALECTS.get("distinct_from", "{A} IS DISTINCT FROM {B}")
+                differs = " OR ".join(
+                    distinct_tmpl
+                    .replace("{A}", f'a.{_validate_identifier(c, case)}')
+                    .replace("{B}", f'b.{_validate_identifier(c, case)}')
+                    for c in non_key_cols
+                )
 
                 modified_sql = f"""
                     SELECT {key_select_a}
                     FROM {safe_a} a
                     INNER JOIN {safe_b} b ON {on_clause}
-                    WHERE {hash_a} != {hash_b}
+                    WHERE {differs}
                 """.strip()
                 modified_key_rows = self._query_rows(conn, modified_sql)
                 logger.info(f"Modified rows: {len(modified_key_rows)}")
@@ -168,13 +191,9 @@ class JoinDiffAlgorithm(BaseAlgorithm):
                 mismatched: List[str] = []
                 if row_a and row_b:
                     key_set = {k.lower() for k in keys_a}
-                    for col in common_columns:
-                        if col.lower() in key_set:
-                            continue
-                        val_a = _get_col_value(row_a, col)
-                        val_b = _get_col_value(row_b, col)
-                        if str(val_a) != str(val_b):
-                            mismatched.append(col)
+                    mismatched = _mismatched_columns(
+                        row_a, row_b, [c for c in common_columns if c.lower() not in key_set]
+                    )
 
                 row_diffs.append(DiffRow(
                     key_values=key_vals,

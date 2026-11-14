@@ -14,7 +14,15 @@ from dimer.core.algorithms.base import (
     _supports_sql,
     _validate_identifier,
 )
-from dimer.core.models import DiffAlgorithm, DiffResult, DiffRun, RowStatus
+from dimer.core.models import (
+    Assurance,
+    ComparisonPurpose,
+    Coverage,
+    DiffAlgorithm,
+    DiffResult,
+    DiffRun,
+    RowStatus,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -76,7 +84,13 @@ class SampledAlgorithm(BaseAlgorithm):
       margin_of_error, confidence_level, estimated_total_diffs
     """
 
-    def run(self) -> DiffRun:
+    ALGORITHM = DiffAlgorithm.SAMPLED
+    PURPOSE = ComparisonPurpose.SAMPLED_VALIDATION
+    ASSURANCE = Assurance.APPROXIMATE
+    COVERAGE = Coverage.SAMPLED
+    REQUIRES_KEYS = True
+
+    def _run(self) -> DiffRun:
         sample_size: int = self._left_config.get('sample_size', SAMPLED_DEFAULT_SIZE)  # type: ignore[attr-defined]
         confidence: float = self._left_config.get('confidence', SAMPLED_DEFAULT_CONFIDENCE)  # type: ignore[attr-defined]
 
@@ -174,17 +188,16 @@ class SampledAlgorithm(BaseAlgorithm):
         logger.info(f"Fetched {len(target_rows_b):,} matching rows from target")
 
         # Build key → row lookups (both keyed by A-side key values)
-        lookup_a: Dict[tuple, Dict] = {
-            tuple(_get_col_value(r, k) for k in keys_a): r
-            for r in sample_rows_a
-        }
-        lookup_b: Dict[tuple, Dict] = {
-            tuple(_get_col_value(r, k) for k in keys_b): {
+        # Rejects NULL / duplicate keys seen in the sample (ADR-0001 §D4); a full
+        # pushdown uniqueness scan would defeat the point of sampling.
+        lookup_a: Dict[tuple, Dict] = self._index_rows(sample_rows_a, keys_a, table_a)
+        lookup_b: Dict[tuple, Dict] = self._index_rows(
+            target_rows_b, keys_b, table_b,
+            remap=lambda r: {
                 col_a: _get_col_value(r, col_b)
                 for col_a, col_b in zip(common_columns, common_columns_b)
-            }
-            for r in target_rows_b
-        }
+            },
+        )
 
         # Classify: DELETED rows (sampled from source, missing in target) and
         # MODIFIED rows (present in both but values differ).

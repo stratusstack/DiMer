@@ -22,7 +22,9 @@ from dimer.core.compare import (
 )
 from dimer.core.factory import ConnectorFactory
 from dimer.core.models import (
+    Assurance,
     ComparisonConfig,
+    ComparisonPurpose,
     ConnectionConfig,
     DiffAlgorithm,
     DiffRun,
@@ -1009,6 +1011,33 @@ def display_search_result(run: SearchRun) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _match_phrase(result: DiffRun) -> str:
+    """Verdict wording for a match — claims only what the run proved (ADR-0001 §D2)."""
+    purpose = result.purpose
+    if purpose == ComparisonPurpose.SAMPLED_VALIDATION:
+        return "no differences in the sampled rows (target-only rows not checked)"
+    if purpose == ComparisonPurpose.PREFILTER:
+        return "no definite differences found (prefilter, not an equality check)"
+    if purpose == ComparisonPurpose.SCHEMA:
+        return "schemas match"
+    if purpose == ComparisonPurpose.PROFILE:
+        approx = " (approximate)" if result.assurance == Assurance.APPROXIMATE else ""
+        return f"column profiles agree{approx}; rows not compared"
+    if purpose == ComparisonPurpose.VECTOR_SIMILARITY:
+        return "all vectors within the distance threshold"
+    if result.assurance == Assurance.PROBABILISTIC:
+        return "tables are identical (unchanged rows confirmed by hash)"
+    return "tables are identical"
+
+
+def _mismatch_phrase(result: DiffRun) -> str:
+    if result.purpose == ComparisonPurpose.SCHEMA:
+        return "schemas differ"
+    if result.purpose == ComparisonPurpose.PROFILE:
+        return "column profiles differ"
+    return "tables differ"
+
+
 def display_result(result: DiffRun) -> None:
     """Print a human-readable summary of a DiffRunResult."""
     print()
@@ -1017,12 +1046,17 @@ def display_result(result: DiffRun) -> None:
     if result.error:
         print(f"  {_red('✗  ERROR')}  {result.error}")
     elif result.match:
-        print(f"  {_green('✓  MATCH')}  — tables are identical")
+        print(f"  {_green('✓  MATCH')}  — {_match_phrase(result)}")
     else:
-        print(f"  {_red('✗  MISMATCH')}  — tables differ")
+        print(f"  {_red('✗  MISMATCH')}  — {_mismatch_phrase(result)}")
 
     if result.algorithm:
         print(f"  Algorithm      : {result.algorithm}")
+    if result.purpose and result.assurance and result.coverage:
+        print(f"  Guarantee      : {result.purpose.value} · {result.assurance.value} · {result.coverage.value}")
+    excluded = (result.metadata or {}).get('excluded_columns')
+    if excluded:
+        print(f"  {_yellow('⚠')}  Not compared (incompatible types): {', '.join(excluded)}")
     if result.execution_time_seconds is not None:
         print(f"  Elapsed        : {result.execution_time_seconds:.2f}s")
     if result.algorithm == DiffAlgorithm.BISECTION and result.metadata:

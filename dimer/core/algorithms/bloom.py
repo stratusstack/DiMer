@@ -16,7 +16,16 @@ from dimer.core.algorithms.base import (
     _supports_sql,
     _validate_identifier,
 )
-from dimer.core.models import DiffAlgorithm, DiffResult, DiffRow, DiffRun, RowStatus
+from dimer.core.models import (
+    Assurance,
+    ComparisonPurpose,
+    Coverage,
+    DiffAlgorithm,
+    DiffResult,
+    DiffRow,
+    DiffRun,
+    RowStatus,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -88,7 +97,13 @@ class BloomPrefilterAlgorithm(BaseAlgorithm):
     definite_modified, prefilter (always True).
     """
 
-    def run(self) -> DiffRun:
+    ALGORITHM = DiffAlgorithm.BLOOM
+    PURPOSE = ComparisonPurpose.PREFILTER
+    ASSURANCE = Assurance.PROBABILISTIC
+    COVERAGE = Coverage.FULL
+    REQUIRES_KEYS = True
+
+    def _run(self) -> DiffRun:
         start = time.time()
         fpr: float = self._left_config.get('bloom_fpr', BLOOM_DEFAULT_FPR)  # type: ignore[attr-defined]
 
@@ -149,6 +164,9 @@ class BloomPrefilterAlgorithm(BaseAlgorithm):
             self._right_connector, table_b, keys_b, non_key_cols_b, case_b
         )
         count_a, count_b = len(rows_a), len(rows_b)
+        # Validates key rules only (ADR-0001 §D4); the filters below use the raw rows
+        self._index_rows(rows_a, keys_a, table_a)
+        self._index_rows(rows_b, keys_b, table_b)
         logger.info(f"Narrow fetch complete — source: {count_a} rows, target: {count_b} rows")
 
         # Build (key string, key|hash string) pairs per side
